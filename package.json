@@ -1,0 +1,44 @@
+{
+  "name": "opencode-usage",
+  "version": "0.1.0",
+  "description": "Track OpenCode token usage, cache statistics and estimated costs across all your projects. Global /usage slash command.",
+  "type": "module",
+  "license": "MIT",
+  "keywords": [
+    "opencode",
+    "usage",
+    "tokens",
+    "cost",
+    "cache",
+    "plugin"
+  ],
+  "engines": {
+    "node": ">=23.4.0"
+  },
+  "bin": {
+    "opencode-usage": "dist/cli/index.js"
+  },
+  "exports": {
+    ".": "./dist/core/index.js",
+    "./plugin/server": "./dist/plugin/plugin-server.js",
+    "./plugin/tui": "./dist/plugin/plugin-tui.js"
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "docs"
+  ],
+  "scripts": {
+    "build": "node scripts/build.mjs",
+    "test": "node --test \"tests/**/*.test.ts\"",
+    "prepublishOnly": "npm run build && npm test"
+  },
+  "devDependencies": {
+    "@opencode-ai/plugin": "1.18.18",
+    "@opentui/solid": "0.5.3",
+    "@types/node": "^24.0.0",
+    "esbuild": "^0.25.0",
+    "solid-js": "1.9.12",
+    "typescript": "^5.8.0"
+  }
+}
