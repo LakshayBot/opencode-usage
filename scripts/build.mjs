@@ -6,6 +6,16 @@ import { fileURLToPath } from "node:url"
 
 const root = path.dirname(fileURLToPath(new URL(".", import.meta.url)))
 
+// 0. Version drift guard: package.json version must match src/version.ts.
+const pkg = JSON.parse(fs.readFileSync(path.join(root, "package.json"), "utf8"))
+const versionSrc = fs
+  .readFileSync(path.join(root, "src/version.ts"), "utf8")
+  .match(/export const VERSION = "([^"]+)"/)?.[1]
+if (!versionSrc) throw new Error("src/version.ts is missing the VERSION constant")
+if (pkg.version !== versionSrc) {
+  throw new Error(`Version drift: package.json is ${pkg.version} but src/version.ts is ${versionSrc} — bump both together`)
+}
+
 // 1. Compile CLI + shared core with tsc (rewrites .ts imports to .js).
 const tsc = spawnSync("npx", ["tsc", "-p", "tsconfig.json"], { cwd: root, stdio: "inherit" })
 if (tsc.status !== 0) process.exit(tsc.status ?? 1)

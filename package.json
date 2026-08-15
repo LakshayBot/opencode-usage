@@ -1,6 +1,6 @@
 {
-  "name": "opencode-usage",
-  "version": "0.1.0",
+  "name": "@skinnysheep/opencode-usage",
+  "version": "0.1.2",
   "description": "Track OpenCode token usage, cache statistics and estimated costs across all your projects. Global /usage slash command.",
   "type": "module",
   "license": "MIT",
@@ -16,7 +16,10 @@
     "node": ">=23.4.0"
   },
   "bin": {
-    "opencode-usage": "dist/cli/index.js"
+    "opencode-usage": "dist/cli/entry.js"
+  },
+  "publishConfig": {
+    "access": "public"
   },
   "exports": {
     ".": "./dist/core/index.js",

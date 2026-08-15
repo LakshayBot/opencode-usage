@@ -14,7 +14,6 @@
  */
 
 import fs from "node:fs"
-import { fileURLToPath, pathToFileURL } from "node:url"
 import { detectOpenCode } from "../opencode/detector.ts"
 import {
   install,
@@ -30,7 +29,7 @@ import { UsageDatabase, openDatabase, wipeDatabase } from "../storage/database.t
 import { HistoricalImporter } from "../opencode/historical-importer.ts"
 import type { ReportFilter, ReportPeriod } from "../types/usage.ts"
 
-const VERSION = "0.1.0"
+import { VERSION } from "../version.ts"
 
 function log(message: string): void {
   process.stdout.write(message + "\n")
@@ -331,7 +330,7 @@ Options:
   -y, --yes           Skip confirmations (automation)
 `
 
-async function main(): Promise<void> {
+export async function main(): Promise<void> {
   const { positional, flags } = parseFlags(process.argv.slice(2))
   const command = positional[0]
 
@@ -371,13 +370,4 @@ async function main(): Promise<void> {
     default:
       error(`unknown command "${command}" — run \`opencode-usage help\``)
   }
-}
-
-const IS_MAIN =
-  process.argv[1] !== undefined && import.meta.url === pathToFileURL(process.argv[1]).href
-
-export { IS_MAIN }
-
-if (IS_MAIN) {
-  await main()
 }

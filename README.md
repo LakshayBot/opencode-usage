@@ -1,5 +1,8 @@
 # OpenCode Usage
 
+[![npm](https://img.shields.io/npm/v/@skinnysheep/opencode-usage)](https://www.npmjs.com/package/@skinnysheep/opencode-usage)
+[![GitHub](https://img.shields.io/badge/source-github-181717?logo=github)](https://github.com/LakshayBot/opencode-usage)
+
 Track your **OpenCode** token usage, cache statistics and estimated costs — across **all** your projects, from one global database.
 
 ```
@@ -36,7 +39,7 @@ Estimated Total:       $14.27
 Requires **Node.js >= 23.4** for the CLI (the plugin itself runs inside opencode's bundled Bun runtime — nothing extra to install).
 
 ```bash
-npm install -g opencode-usage
+npm install -g @skinnysheep/opencode-usage
 opencode-usage install
 ```
 
