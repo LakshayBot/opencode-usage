@@ -100,6 +100,10 @@ Already imported:       15,000
 New events imported:     3,492
 ```
 
+Every command also checks the npm registry for newer releases (cached for 24h,
+silent on failure — it can never block or break a command) and prints how to
+update when one exists. Set `OPENCODE_USAGE_NO_UPDATE_CHECK=1` to disable.
+
 ## What data is tracked
 
 For **every model request** (opencode emits a `step-finish` part per LLM step —
@@ -204,7 +208,7 @@ database (with confirmation).
 ```bash
 npm install
 npm run build      # tsc + esbuild (CLI + self-contained plugin bundles)
-npm test           # node --test (77 tests: normalization, pricing, storage, CLI, import, TUI formatting)
+npm test           # node --test (80 tests: normalization, pricing, storage, CLI, import, TUI formatting)
 ```
 
 Built for opencode 1.18.18, verified end-to-end against a live binary.

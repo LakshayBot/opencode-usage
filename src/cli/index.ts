@@ -27,6 +27,7 @@ import { renderReportMarkdown } from "../reporting/formatters/markdown.ts"
 import { HybridPricingProvider, syncPricingFromModelsDev } from "../pricing/modelsdev.ts"
 import { UsageDatabase, openDatabase, wipeDatabase } from "../storage/database.ts"
 import { HistoricalImporter } from "../opencode/historical-importer.ts"
+import { checkForUpdate } from "../update/checker.ts"
 import type { ReportFilter, ReportPeriod } from "../types/usage.ts"
 
 import { VERSION } from "../version.ts"
@@ -370,4 +371,21 @@ export async function main(): Promise<void> {
     default:
       error(`unknown command "${command}" — run \`opencode-usage help\``)
   }
+
+  if (!isInfoCommand(command)) {
+    const notice = await checkForUpdate()
+    if (notice) process.stderr.write(`\n${notice}\n\n`)
+  }
+}
+
+function isInfoCommand(command: string | undefined): boolean {
+  return (
+    command === undefined ||
+    command === "help" ||
+    command === "--help" ||
+    command === "-h" ||
+    command === "version" ||
+    command === "--version" ||
+    command === "-v"
+  )
 }
