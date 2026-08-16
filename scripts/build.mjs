@@ -31,6 +31,7 @@ const external = [
   "@opentui/solid/*",
   "@opentui/core",
   "@opentui/keymap",
+  "@opentui/keymap/*",
   "@opencode-ai/plugin",
   "@opencode-ai/plugin/*",
 ]

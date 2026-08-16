@@ -70,7 +70,10 @@ Your existing `opencode.json` is **never modified**. `install` is **idempotent**
 /usage provider <id>   filter by provider (e.g. anthropic)
 ```
 
-`/usage` renders **natively in the TUI** (zero LLM tokens, theme-aware). Typing `/usage today` + Enter goes through the server command + `usage` tool instead — also fine, costs one small model call.
+`/usage` renders natively in the TUI as a compact OpenCode-style popup (zero LLM
+tokens, theme-aware, Esc to close) — the same dialog system behind the theme
+and model selectors. Typing `/usage today` + Enter goes through the server
+command + `usage` tool instead — also fine, costs one small model call.
 
 ## CLI
 
@@ -201,7 +204,7 @@ database (with confirmation).
 ```bash
 npm install
 npm run build      # tsc + esbuild (CLI + self-contained plugin bundles)
-npm test           # node --test (67 tests: normalization, pricing, storage, CLI, import)
+npm test           # node --test (77 tests: normalization, pricing, storage, CLI, import, TUI formatting)
 ```
 
 Built for opencode 1.18.18, verified end-to-end against a live binary.

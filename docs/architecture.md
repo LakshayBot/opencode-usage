@@ -18,7 +18,7 @@ A single npm package ships two runtimes plus a CLI:
 │    command.execute.before → fast-path interception           │
 │                                                              │
 │  TUI plugin (bundled, same file)                             │
-│    /usage slash command → native rendered route              │
+│    /usage slash command → native dialog popup                │
 └─────────────────────────────────────────────────────────────┘
         │                        │                     │
         │ installs files         │ reads/writes        │ reads (import)
@@ -29,7 +29,7 @@ A single npm package ships two runtimes plus a CLI:
 ```
 
 - **Server plugin** — the officially supported plugin mechanism (auto-discovered global plugin directory). It captures usage from **opencode's own normalized event stream** (`message.part.updated` with `step-finish` parts), which contains exact tokens + cost computed by opencode itself — no estimation ever.
-- **TUI plugin**: same installation, second export. Registers `/usage` in the TUI command palette; renders a native OpenTUI route. Zero LLM tokens consumed for the primary path. (Loaded via the `tui.json` `plugin` array — see §6.)
+- **TUI plugin**: same installation, second export. Registers `/usage` in the TUI command palette; selecting it opens a **native dialog popup** (via `api.ui.dialog` + `api.ui.DialogSelect` — the same mechanism as the theme/model selectors), so the backdrop, widths, theming and Esc handling come from the host. Zero LLM tokens consumed for the primary path. (Loaded via the `tui.json` `plugin` array — see §6.)
 - **CLI** — operations tooling (install/uninstall/status/import/stats/reset/update-pricing).
 
 ## 2. Event lifecycle (capture)
@@ -165,9 +165,9 @@ So `opencode-usage install` performs exactly these steps, each idempotent:
 
 ## 7. The `/usage` command (TUI + server duality)
 
-- **TUI plugin**: registers command `usage` (`slash: { name: "usage" }`). Selecting `/usage` from the palette runs `run()` → `api.route.navigate("usage", { period, args })` → native OpenTUI route renders the report (boxes, colors from `api.theme`, sections: messages, tokens, cache, cost, top models, per-model/per-provider tables, filters via dialog). Zero LLM cost. Also registered in the command palette (not just autocomplete).
+- **TUI plugin**: registers the palette commands `/usage`, `/usage today|week|month|all`. Selecting one runs `openUsage()` → `api.ui.dialog.replace(...)` opens a **native dialog popup** (dimmed backdrop, `backgroundPanel`, medium/large widths, Esc/ctrl+c close — all from the host). The popup renders a compact **Overview** (messages/tokens/cost + input/output/cache breakdown, themed via `api.theme.current`) with a navigable **By model · By provider · History** action list. `↑↓`/`Enter` reuse the `dialog.select` keybindings; "By model" and "By provider" are native `DialogSelect` lists; "History" switches the time period. Zero LLM cost. All TUI formatting is centralized in `ui/usage/usage-format.ts` and view models in `ui/usage/usage-view-model.ts` — the popup never touches raw rows.
 - **Server command** (`commands/usage.md`): template = "Call the `usage` tool with arguments $ARGUMENTS and display its output verbatim." The `usage` tool (registered via the server plugin `tool` hook) returns the fully formatted report from the DB. This covers the typed-Enter path in TUI and any client that executes server commands; it costs one small LLM round-trip.
-- Shared reporting core: `reporting/usage-report.ts` + formatters produce both the markdown (tool/LLM path) and data structures consumed by the TUI renderer. One computation, two renderers.
+- Shared reporting core: `reporting/usage-report.ts` + formatters produce both the markdown (tool/LLM path) and the data consumed by the TUI view models. One computation, two renderers.
 - Filters: `session` (default), `today`, `week`, `month`, `all`; `model <id>`, `provider <id>`; combined (`/usage week model claude-sonnet`).
 
 ## 8. Historical import (`opencode-usage import`)
@@ -200,6 +200,8 @@ src/
   pricing/        pricing-provider.ts pricing-catalog.ts cost-calculator.ts modelsdev.ts
   opencode/       paths.ts detector.ts installer.ts command-file.ts historical-importer.ts
   reporting/      usage-report.ts formatters/
+  ui/usage/       usage-format.ts usage-view-model.ts usage-view.tsx
+                  usage-overview.tsx usage-views.tsx usage-overlay.tsx (TUI popup)
   types/          usage.ts pricing.ts
 tests/            unit + integration (tmp-dir based, fake opencode.db fixtures)
 ```
