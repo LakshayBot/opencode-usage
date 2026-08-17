@@ -12,7 +12,7 @@
  * down/ctrl+n, return) so it behaves exactly like the theme/model selectors.
  */
 
-import { For, Show, createSignal, type JSX } from "solid-js"
+import { For, Show, type JSX } from "solid-js"
 import { useBindings } from "@opentui/keymap/solid"
 import { box, text } from "@opentui/solid"
 import type { TuiPluginApi } from "@opencode-ai/plugin/tui"
@@ -30,10 +30,17 @@ export function UsageOverviewView(props: {
   api: TuiPluginApi
   overview: UsageOverviewModel
   actions: OverviewAction[]
+  /** Explicitly selected action. The navigation commands re-render the dialog
+   * via `dialog.replace` with the next index instead of relying on reactive
+   * prop updates — the host renderer does not reliably redraw plugin-rendered
+   * row highlights inside the dialog (verified empirically on 1.18.18). */
+  selectedIndex?: number
+  /** Called with the next index when the user navigates. */
+  onNavigate?: (nextIndex: number) => void
 }): JSX.Element {
   const t = props.api.theme.current
   const count = () => props.actions.length
-  const [selected, setSelected] = createSignal(0)
+  const selected = props.selectedIndex ?? 0
 
   const dividerWidth = Math.max(8, Math.min(52, props.api.renderer.width - 12))
 
@@ -50,11 +57,11 @@ export function UsageOverviewView(props: {
   // actions navigate exactly like the native By model / By provider lists
   // (and honor user rebinds).
   useBindings(() => {
-    const move = (direction: number) =>
-      setSelected((s) => {
-        const total = count()
-        return total === 0 ? 0 : (s + direction + total) % total
-      })
+    const move = (direction: number) => {
+      const total = count()
+      if (total === 0) return
+      props.onNavigate?.((selected + direction + total) % total)
+    }
     const commands = [
       {
         name: "dialog.select.prev",
@@ -72,7 +79,7 @@ export function UsageOverviewView(props: {
         name: "dialog.select.submit",
         title: "Open usage view",
         category: "Usage",
-        run: () => props.actions[selected()]?.run(),
+        run: () => props.actions[selected]?.run(),
       },
     ]
     const gathered = props.api.tuiConfig.keybinds.gather("dialog.select", [
@@ -92,6 +99,11 @@ export function UsageOverviewView(props: {
           ]
     return {
       enabled: () => props.api.ui.dialog.open,
+      // Higher priority than the host's base/prompt layers so up/down/return
+      // resolve to this dialog's commands while the popup is open (the prompt
+      // layer still binds these keys in normal mode and would otherwise win or
+      // hold the first press for disambiguation).
+      priority: 50,
       commands,
       bindings,
     }

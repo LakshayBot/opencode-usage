@@ -41,9 +41,9 @@ export function openUsage(api: TuiPluginApi, period: ReportPeriod): void {
   showOverview(api, period)
 }
 
-export function showOverview(api: TuiPluginApi, period: ReportPeriod): void {
+export function showOverview(api: TuiPluginApi, period: ReportPeriod, selectedIndex = 0): void {
   api.ui.dialog.setSize("medium")
-  api.ui.dialog.replace(() => renderOverview(api, period), undefined)
+  api.ui.dialog.replace(() => renderOverview(api, period, selectedIndex), undefined)
 }
 
 export function showModels(api: TuiPluginApi, period: ReportPeriod): void {
@@ -69,12 +69,21 @@ export function showModelDetail(api: TuiPluginApi, period: ReportPeriod, model: 
   )
 }
 
-function renderOverview(api: TuiPluginApi, period: ReportPeriod): JSX.Element {
+function renderOverview(api: TuiPluginApi, period: ReportPeriod, selectedIndex = 0): JSX.Element {
   const result = computeReportSafely(period)
   if (result.kind === "error") return <UsageErrorView api={api} error={result.error} />
   const overview = buildUsageOverview(result.report)
   if (!overview.hasData) return <UsageEmptyView api={api} periodLabel={overview.periodLabel} />
-  return <UsageOverviewView api={api} overview={overview} actions={buildActions(api, period, result.report)} />
+  const actions = buildActions(api, period, result.report)
+  return (
+    <UsageOverviewView
+      api={api}
+      overview={overview}
+      actions={actions}
+      selectedIndex={selectedIndex}
+      onNavigate={(next) => showOverview(api, period, next)}
+    />
+  )
 }
 
 function buildActions(api: TuiPluginApi, period: ReportPeriod, report: UsageReport): OverviewAction[] {
