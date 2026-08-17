@@ -157,22 +157,34 @@ export function UsageOverviewView(props: {
       <UsageHeader api={props.api} title="Usage" />
 
       <Show when={(props.tabs?.length ?? 0) > 1}>
-        <box paddingLeft={4} paddingRight={4} flexDirection="row" gap={1}>
+        <box paddingLeft={4} paddingRight={4} flexDirection="row" alignItems="center" gap={1}>
           <For each={props.tabs}>
             {(period, index) => {
               const active = samePeriod(period, props.activePeriod ?? period)
               const label = PERIOD_LABELS[period.kind] ?? period.kind
               return (
-                <text
-                  {...({
-                    fg: active ? t.text : t.textMuted,
-                    bold: active,
-                    wrapMode: "none",
-                  } as TextProps)}
-                >
-                  {index() > 0 ? " · " : ""}
-                  {label}
-                </text>
+                <>
+                  {index() > 0 ? (
+                    <text fg={t.textMuted} wrapMode="none">
+                      ·
+                    </text>
+                  ) : null}
+                  <box
+                    backgroundColor={active ? t.primary : undefined}
+                    paddingLeft={1}
+                    paddingRight={1}
+                  >
+                    <text
+                      {...({
+                        fg: active ? t.selectedListItemText : t.textMuted,
+                        bold: active,
+                        wrapMode: "none",
+                      } as TextProps)}
+                    >
+                      {label}
+                    </text>
+                  </box>
+                </>
               )
             }}
           </For>
@@ -180,7 +192,9 @@ export function UsageOverviewView(props: {
       </Show>
 
       <box paddingLeft={4} paddingRight={4}>
-        <text fg={t.textMuted}>{props.overview.periodLabel}</text>
+        <text {...({ fg: t.text, bold: true, wrapMode: "none" } as TextProps)}>
+          {props.overview.periodLabel}
+        </text>
       </box>
 
       <box paddingLeft={4} paddingRight={4} gap={1}>
