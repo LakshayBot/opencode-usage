@@ -1,11 +1,13 @@
 /**
  * opencode-usage TUI plugin (referenced from ~/.config/opencode/tui.json).
  *
- * Registers /usage (plus /usage today|week|month|all) in the TUI command
- * palette; selecting one opens a native OpenCode dialog popup rendering the
- * usage report — zero LLM tokens consumed, identical for every model.
+ * Registers EXACTLY ONE palette command — /usage — which opens the native
+ * OpenCode dialog popup (zero LLM tokens, identical for every model). All
+ * period switching happens INSIDE the popup via tabs (Session/Today/Week/
+ * Month/All), so the slash palette stays clean: no /usage today|week|month|all
+ * entries.
  *
- * Plain /usage lives HERE (keymap popup) and NOT in a commands/usage.md file:
+ * /usage lives HERE (keymap popup) and NOT in a commands/usage.md file:
  * opencode's slash autocomplete lists keymap slashName commands AND every
  * server command with no dedup (packages/tui/src/component/prompt/autocomplete.tsx
  * in 1.18.18), so a command file plus this keymap entry produced two /usage
@@ -44,46 +46,10 @@ export default {
           namespace: "palette",
           name: "usage",
           title: "OpenCode usage",
-          desc: "Usage for the current session",
+          desc: "Usage report — current session (tabs switch period)",
           category: "Usage",
           slashName: "usage",
           run: () => openUsage(api, periodForCurrentRoute()),
-        },
-        {
-          namespace: "palette",
-          name: "usage.today",
-          title: "OpenCode usage — today",
-          desc: "Usage since midnight",
-          category: "Usage",
-          slashName: "usage today",
-          run: () => openUsage(api, { kind: "today" }),
-        },
-        {
-          namespace: "palette",
-          name: "usage.week",
-          title: "OpenCode usage — last 7 days",
-          desc: "Usage over the last 7 days",
-          category: "Usage",
-          slashName: "usage week",
-          run: () => openUsage(api, { kind: "week" }),
-        },
-        {
-          namespace: "palette",
-          name: "usage.month",
-          title: "OpenCode usage — last 30 days",
-          desc: "Usage over the last 30 days",
-          category: "Usage",
-          slashName: "usage month",
-          run: () => openUsage(api, { kind: "month" }),
-        },
-        {
-          namespace: "palette",
-          name: "usage.all",
-          title: "OpenCode usage — all time",
-          desc: "Usage since tracking began",
-          category: "Usage",
-          slashName: "usage all",
-          run: () => openUsage(api, { kind: "all" }),
         },
       ],
       bindings: [],

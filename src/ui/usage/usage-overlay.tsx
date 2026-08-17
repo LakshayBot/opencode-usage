@@ -69,6 +69,20 @@ export function showModelDetail(api: TuiPluginApi, period: ReportPeriod, model: 
   )
 }
 
+/**
+ * The period tabs shown inside the popup. Built once per open from the route
+ * (a "Session" tab appears when /usage is opened from inside a session) so the
+ * tab order stays stable while the user switches periods.
+ */
+function buildPeriodTabs(api: TuiPluginApi): ReportPeriod[] {
+  const tabs: ReportPeriod[] = [{ kind: "today" }, { kind: "week" }, { kind: "month" }, { kind: "all" }]
+  const current = api.route.current
+  if (current?.name === "session" && typeof current.params?.sessionID === "string") {
+    tabs.unshift({ kind: "session", sessionId: current.params.sessionID })
+  }
+  return tabs
+}
+
 function renderOverview(api: TuiPluginApi, period: ReportPeriod, selectedIndex = 0): JSX.Element {
   const result = computeReportSafely(period)
   if (result.kind === "error") return <UsageErrorView api={api} error={result.error} />
@@ -80,6 +94,9 @@ function renderOverview(api: TuiPluginApi, period: ReportPeriod, selectedIndex =
       api={api}
       overview={overview}
       actions={actions}
+      tabs={buildPeriodTabs(api)}
+      activePeriod={period}
+      onSelectPeriod={(next) => showOverview(api, next)}
       selectedIndex={selectedIndex}
       onNavigate={(next) => showOverview(api, period, next)}
     />

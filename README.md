@@ -65,25 +65,28 @@ Your existing `opencode.json` is **never modified**. `install` is **idempotent**
 
 ## Usage
 
+The slash palette shows **exactly one entry**: `/usage`. Selecting it opens a
+**native OpenCode-style popup** (zero LLM tokens, theme-aware, Esc to close) —
+the same dialog system behind the theme and model selectors — so the report
+looks and behaves identically no matter which model is active.
+
+Inside the popup, **period tabs** switch between scopes:
+
 ```
-/usage                 current session (default)
-/usage today           since midnight
-/usage week            last 7 days
-/usage month           last 30 days
-/usage all             everything
-/usage model <id>      filter by model (e.g. claude-sonnet)
-/usage provider <id>   filter by provider (e.g. anthropic)
+Session · Today · Week · Month · All
 ```
 
-The TUI slash palette shows **one entry per slash command**. Selecting any of
-them opens a **native OpenCode-style popup** (zero LLM tokens, theme-aware, Esc
-to close) — the same dialog system behind the theme and model selectors — so
-the report looks and behaves identically no matter which model is active.
-Plain `/usage` shows the current session (falling back to today); the other
-entries filter by period. Typing `/usage ...` + Enter instead sends the text to
-the model — the `usage` tool is still registered by the server plugin, so a
-capable model can still produce the report on request (one small model call,
-best-effort; use the palette for the byte-exact popup).
+- Opened from inside a session → `Session` is the default (that session);
+  otherwise `Today`. `←` `→` (or the tabs' label) switches period.
+- `↑` `↓` navigate the actions (`By model · By provider · History`);
+  `Enter` opens the highlighted one; `Esc`/`Ctrl+C` closes.
+
+The same popup powers every scope, so the whole history (sessions, today, last
+7 days, last 30 days, all time) is reachable without a single model call.
+Typing `/usage ...` + Enter instead sends the text to the model — the `usage`
+tool is still registered by the server plugin, so a capable model can still
+produce a report on request (one small model call, best-effort; use the palette
+for the byte-exact popup).
 
 ## CLI
 
@@ -210,9 +213,9 @@ database (with confirmation).
 - Tracking begins at install time; older history requires `opencode-usage import`.
 - Cache token breakdowns depend on providers reporting cache usage.
 - Cost data is an estimate of provider billing, computed from public pricing.
-- The TUI slash palette always shows exactly one entry per slash command; arbitrary filters
-  (`/usage provider anthropic`) are not available in the popup — the typed `/usage ...` path can
-  still work via the `usage` tool when the model cooperates (best-effort).
+- The slash palette always shows exactly one entry: `/usage` (arbitrary filters like
+  `/usage provider anthropic` are not in the popup — the typed `/usage ...` path can still work
+  via the `usage` tool when the model cooperates, best-effort).
 
 ## Development
 
