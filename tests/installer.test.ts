@@ -220,3 +220,83 @@ describe("ownership markers", () => {
     assert.ok(md.startsWith("---"))
   })
 })
+
+describe("pathToFileUrlSpec (cross-platform)", () => {
+  it("produces POSIX file URLs unchanged", () => {
+    assert.equal(
+      pathToFileUrlSpec("/Users/john/.config/opencode/opencode-usage.tui.js"),
+      "file:///Users/john/.config/opencode/opencode-usage.tui.js",
+    )
+  })
+
+  it("builds valid Windows drive-letter file URLs (the pre-0.1.5 bug)", () => {
+    const spec = pathToFileUrlSpec("C:\\Users\\John Doe\\AppData\\Roaming\\opencode\\opencode-usage.tui.js")
+    // Drive letter keeps its colon and the URL gets a third slash.
+    assert.equal(spec, "file:///C:/Users/John%20Doe/AppData/Roaming/opencode/opencode-usage.tui.js")
+    // It must not parse with the drive letter as the URL host.
+    assert.equal(new URL(spec).hostname, "")
+    assert.equal(new URL(spec).pathname, "/C:/Users/John%20Doe/AppData/Roaming/opencode/opencode-usage.tui.js")
+  })
+
+  it("handles UNC paths", () => {
+    assert.equal(
+      pathToFileUrlSpec("\\\\server\\share\\opencode-usage.tui.js"),
+      "file://server/share/opencode-usage.tui.js",
+    )
+  })
+})
+
+describe("legacy broken Windows tui.json entries", () => {
+  const LEGACY = "file://C/Users/john/AppData/Roaming/opencode/opencode-usage.tui.js"
+  const CORRECT = "file:///C:/Users/john/AppData/Roaming/opencode/opencode-usage.tui.js"
+
+  it("replaces a legacy spec in place on reinstall", () => {
+    const dir = tmpDir()
+    try {
+      const file = path.join(dir, "tui.json")
+      ensureTuiConfigEntry(file, LEGACY)
+      const result = ensureTuiConfigEntry(file, CORRECT)
+      assert.equal(result.state, "updated")
+      const parsed = JSON.parse(fs.readFileSync(file, "utf8")) as { plugin: string[] }
+      assert.deepEqual(parsed.plugin, [CORRECT], "no duplicate entry may remain")
+    } finally {
+      rmrf(dir)
+    }
+  })
+
+  it("removes a legacy spec on uninstall", () => {
+    const dir = tmpDir()
+    try {
+      const file = path.join(dir, "tui.json")
+      ensureTuiConfigEntry(file, LEGACY)
+      assert.equal(removeTuiConfigEntry(file, CORRECT), "removed")
+      assert.ok(!fs.existsSync(file))
+    } finally {
+      rmrf(dir)
+    }
+  })
+
+  it("status counts a legacy spec as installed", async () => {
+    const dir = tmpDir()
+    try {
+      const file = path.join(dir, "tui.json")
+      ensureTuiConfigEntry(file, LEGACY)
+      const parsed = JSON.parse(fs.readFileSync(file, "utf8")) as { plugin: string[] }
+      assert.equal(parsed.plugin[0], LEGACY)
+      // The plugin path is a Windows path (as on a real Windows machine);
+      // status() must derive a spec matching the legacy tui.json entry.
+      const fakePaths = {
+        serverPluginPath: path.join(dir, "opencode-usage.js"),
+        tuiPluginPath: "C:\\Users\\john\\AppData\\Roaming\\opencode\\opencode-usage.tui.js",
+        tuiConfigPath: file,
+        commandPath: path.join(dir, "usage.md"),
+        usageDbPath: path.join(dir, "usage.db"),
+        usageDataDir: dir,
+      }
+      const st = status(fakePaths as never, { detected: true, binaryPath: "opencode", version: "1.18.18" }, "0.1.5")
+      assert.equal(st.tuiConfig, true, "legacy spec must count as installed")
+    } finally {
+      rmrf(dir)
+    }
+  })
+})

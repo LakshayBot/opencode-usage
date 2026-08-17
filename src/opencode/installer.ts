@@ -120,8 +120,40 @@ export function install(paths: Paths, version: string, options: InstallOptions =
   return result
 }
 
+/**
+ * Convert an absolute filesystem path into the `file://` spec opencode's TUI
+ * config (`tui.json` `plugin` array) expects.
+ *
+ * Windows paths need special care: `C:\\Users\\...` must become
+ * `file:///C:/Users/...` — the drive letter keeps its colon and the URL gains
+ * a third slash. (A naive `file://` + path produces `file://C/Users/...`,
+ * which parses as a remote host named `C` — opencode then cannot resolve the
+ * plugin and the /usage palette entry never appears. This was the pre-0.1.5
+ * Windows bug.) Paths with spaces or other special characters are
+ * percent-encoded; UNC paths (\\server\\share\...) become
+ * `file://server/share/...`.
+ */
 export function pathToFileUrlSpec(absPath: string): string {
-  return `file://${absPath.replaceAll("\\", "/").replace(/^([a-zA-Z]):/, "$1")}`
+  const normalized = absPath.replaceAll("\\", "/")
+  if (normalized.startsWith("//")) {
+    // UNC: \\server\\share\... → file://server/share/...
+    return `file://${normalized.slice(2)}`
+  }
+  const url = new URL("file:///")
+  url.pathname = normalized
+  return url.href
+}
+
+/**
+ * Canonical form of a tui.json plugin entry, used to compare entries against
+ * our spec regardless of how they were written. Also repairs the legacy
+ * pre-0.1.5 Windows bug (`file://C/Users/...` — drive-letter colon stripped,
+ * no third slash) so re-running install heals old Windows installs in place.
+ */
+function normalizeEntrySpec(entry: string): string {
+  const legacy = /^file:\/\/[a-zA-Z]\//.exec(entry)
+  if (legacy) return `file:///${entry[7]}:${entry.slice(8)}`
+  return entry
 }
 
 function writeIfChanged(file: string, content: string): boolean {
@@ -175,7 +207,15 @@ export function ensureTuiConfigEntry(tuiConfigPath: string, spec: string): TuiCo
 
   const config = parsed as Record<string, unknown>
   const plugins = Array.isArray(config.plugin) ? (config.plugin as unknown[]) : []
-  if (plugins.some((item) => item === spec)) {
+  const matchIndex = plugins.findIndex((item) => normalizeEntrySpec(String(item)) === spec)
+  if (matchIndex >= 0) {
+    if (plugins[matchIndex] !== spec) {
+      // Legacy broken Windows spec (pre-0.1.5) for this same file — repair in place.
+      plugins[matchIndex] = spec
+      config.plugin = plugins
+      fs.writeFileSync(tuiConfigPath, JSON.stringify(config, null, 2) + "\n", "utf8")
+      return { state: "updated" }
+    }
     return { state: "already-present" }
   }
   plugins.push(spec)
@@ -195,7 +235,7 @@ export function removeTuiConfigEntry(tuiConfigPath: string, spec: string): "remo
   if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) return "error"
   const config = parsed as Record<string, unknown>
   const plugins = Array.isArray(config.plugin) ? (config.plugin as unknown[]) : []
-  const next = plugins.filter((item) => item !== spec)
+  const next = plugins.filter((item) => normalizeEntrySpec(String(item)) !== spec)
   if (next.length === plugins.length) return "missing"
   if (next.length === 0) {
     delete config.plugin
@@ -296,7 +336,8 @@ export function status(paths: Paths, detection: OpenCodeStatus, version: string)
   if (fs.existsSync(paths.tuiConfigPath)) {
     try {
       const parsed = JSON.parse(fs.readFileSync(paths.tuiConfigPath, "utf8")) as Record<string, unknown>
-      tuiConfig = Array.isArray(parsed.plugin) && parsed.plugin.includes(pathToFileUrlSpec(paths.tuiPluginPath))
+      tuiConfig =
+        Array.isArray(parsed.plugin) && parsed.plugin.some((item) => normalizeEntrySpec(String(item)) === pathToFileUrlSpec(paths.tuiPluginPath))
     } catch {
       tuiConfig = false
     }

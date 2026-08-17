@@ -1,6 +1,6 @@
 {
   "name": "@skinnysheep/opencode-usage",
-  "version": "0.1.4",
+  "version": "0.1.5",
   "description": "Track OpenCode token usage, cache statistics and estimated costs across all your projects. Global /usage slash command.",
   "type": "module",
   "license": "MIT",
