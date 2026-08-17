@@ -39,36 +39,63 @@ export function UsageOverviewView(props: {
 
   // Register navigation with the host's own binding hook (`useBindings`),
   // active only while this dialog is open and cleaned up when it closes.
-  useBindings(() => ({
-    enabled: () => props.api.ui.dialog.open,
-    commands: [
+  //
+  // We reuse the SAME command names and binding source as the host's native
+  // DialogSelect ("dialog.select.prev/next/submit" bound via the user's
+  // keybind config) instead of inventing our own command names + hardcoded
+  // keys: opencode's default keymap already binds up/ctrl+p, down/ctrl+n and
+  // return to those commands, and a plugin layer that binds "up"/"down" to
+  // different command names loses the resolution race against them — the
+  // symptom was arrow keys doing nothing in this overview. This way the
+  // actions navigate exactly like the native By model / By provider lists
+  // (and honor user rebinds).
+  useBindings(() => {
+    const move = (direction: number) =>
+      setSelected((s) => {
+        const total = count()
+        return total === 0 ? 0 : (s + direction + total) % total
+      })
+    const commands = [
       {
-        name: "opencode-usage.nav.prev",
+        name: "dialog.select.prev",
         title: "Previous usage view",
         category: "Usage",
-        run: () => setSelected((s) => (count() === 0 ? 0 : (s + count() - 1) % count())),
+        run: () => move(-1),
       },
       {
-        name: "opencode-usage.nav.next",
+        name: "dialog.select.next",
         title: "Next usage view",
         category: "Usage",
-        run: () => setSelected((s) => (count() === 0 ? 0 : (s + 1) % count())),
+        run: () => move(1),
       },
       {
-        name: "opencode-usage.nav.select",
+        name: "dialog.select.submit",
         title: "Open usage view",
         category: "Usage",
         run: () => props.actions[selected()]?.run(),
       },
-    ],
-    bindings: [
-      { key: "up", cmd: "opencode-usage.nav.prev" },
-      { key: "ctrl+p", cmd: "opencode-usage.nav.prev" },
-      { key: "down", cmd: "opencode-usage.nav.next" },
-      { key: "ctrl+n", cmd: "opencode-usage.nav.next" },
-      { key: "return", cmd: "opencode-usage.nav.select" },
-    ],
-  }))
+    ]
+    const gathered = props.api.tuiConfig.keybinds.gather("dialog.select", [
+      "dialog.select.prev",
+      "dialog.select.next",
+      "dialog.select.submit",
+    ])
+    const bindings =
+      gathered.length > 0
+        ? gathered
+        : [
+            { key: "up", cmd: "dialog.select.prev" },
+            { key: "ctrl+p", cmd: "dialog.select.prev" },
+            { key: "down", cmd: "dialog.select.next" },
+            { key: "ctrl+n", cmd: "dialog.select.next" },
+            { key: "return", cmd: "dialog.select.submit" },
+          ]
+    return {
+      enabled: () => props.api.ui.dialog.open,
+      commands,
+      bindings,
+    }
+  })
 
   return (
     <box gap={1} paddingBottom={1}>
