@@ -184,10 +184,16 @@ export function seedUsageEvents(dbPath: string, now: number): void {
       cost, provider_reported_cache
     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `)
+  // Recent events are anchored to the start of today (local midnight) so they
+  // stay inside the today window no matter when the test runs — a fixed
+  // now - 1h would cross into yesterday right after midnight and make the
+  // today-only test fail. Capped at now so they are never in the future.
+  const d = new Date(now)
+  const startToday = new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime()
   const events = [
     {
       key: "ocp:t1",
-      ts: now - 3600_000,
+      ts: Math.min(startToday + 15 * 60_000, now),
       session: "ses_x",
       msg: "msg_x",
       provider: "anthropic",
@@ -202,7 +208,7 @@ export function seedUsageEvents(dbPath: string, now: number): void {
     },
     {
       key: "ocp:t2",
-      ts: now - 7200_000,
+      ts: Math.min(startToday + 75 * 60_000, now),
       session: "ses_x",
       msg: "msg_y",
       provider: "anthropic",
