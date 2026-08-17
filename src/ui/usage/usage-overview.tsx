@@ -14,7 +14,7 @@
 
 import { For, Show, type JSX } from "solid-js"
 import { useBindings } from "@opentui/keymap/solid"
-import { box, text } from "@opentui/solid"
+import type { TextProps } from "@opentui/solid"
 import type { TuiPluginApi } from "@opencode-ai/plugin/tui"
 import { formatCost, formatNumber, formatPercent, formatTokens } from "./usage-format.ts"
 import { Divider, MetricRow, UsageHeader } from "./usage-view.tsx"
@@ -149,7 +149,7 @@ export function UsageOverviewView(props: {
 
         <For each={props.actions}>
           {(action, index) => {
-            const active = () => selected() === index()
+            const active = () => selected === index()
             return (
               <box
                 flexDirection="row"
@@ -158,7 +158,7 @@ export function UsageOverviewView(props: {
                 paddingRight={4}
                 backgroundColor={active() ? t.primary : undefined}
               >
-                <text fg={active() ? t.selectedListItemText : t.text} bold={active()} wrapMode="none">
+                <text {...({ fg: active() ? t.selectedListItemText : t.text, bold: active(), wrapMode: "none" } as TextProps)}>
                   {action.title}
                 </text>
                 <Show when={action.description}>

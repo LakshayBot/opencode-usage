@@ -9,7 +9,7 @@
 
 import type { JSX } from "solid-js"
 import { useBindings } from "@opentui/keymap/solid"
-import { box, text } from "@opentui/solid"
+import type { TextProps } from "@opentui/solid"
 import type { TuiPluginApi } from "@opencode-ai/plugin/tui"
 import type { ReportPeriod } from "../../types/usage.ts"
 import { formatCost, formatNumber, formatTokens } from "./usage-format.ts"
@@ -103,7 +103,7 @@ export function UsageModelDetailView(props: {
     <box gap={1} paddingBottom={1}>
       <UsageHeader api={props.api} title="Model" />
       <box paddingLeft={4} paddingRight={4}>
-        <text fg={t.text} bold wrapMode="none">
+        <text {...({ fg: t.text, bold: true, wrapMode: "none" } as TextProps)}>
           {props.model.model}
         </text>
         <text fg={t.textMuted} wrapMode="none">

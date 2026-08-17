@@ -20,6 +20,13 @@ if (pkg.version !== versionSrc) {
 const tsc = spawnSync("npx", ["tsc", "-p", "tsconfig.json"], { cwd: root, stdio: "inherit" })
 if (tsc.status !== 0) process.exit(tsc.status ?? 1)
 
+// 1b. Typecheck the TUI plugin sources too (jsx/tsx included) — the plugin
+// bundles are built by esbuild without typechecking, so without this pass
+// type errors in the popup (e.g. calling a signal that became a plain value)
+// would only surface as a runtime crash inside opencode.
+const tscTui = spawnSync("npx", ["tsc", "-p", "tsconfig.tui.json"], { cwd: root, stdio: "inherit" })
+if (tscTui.status !== 0) process.exit(tscTui.status ?? 1)
+
 const external = [
   "node:sqlite",
   "node:*",

@@ -7,7 +7,7 @@
  * hardcoded colors — every color comes from `api.theme.current`.
  */
 
-import { box, text } from "@opentui/solid"
+import type { TextProps } from "@opentui/solid"
 import type { JSX } from "solid-js"
 import type { TuiPluginApi, TuiThemeCurrent } from "@opencode-ai/plugin/tui"
 
@@ -16,7 +16,7 @@ export function UsageHeader(props: { api: TuiPluginApi; title: string; hint?: st
   const t = props.api.theme.current
   return (
     <box paddingLeft={4} paddingRight={4} flexDirection="row" justifyContent="space-between">
-      <text fg={t.text} bold>
+      <text {...({ fg: t.text, bold: true } as TextProps)}>
         {props.title}
       </text>
       <text fg={t.textMuted}>{props.hint ?? "esc"}</text>
