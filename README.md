@@ -70,10 +70,14 @@ Your existing `opencode.json` is **never modified**. `install` is **idempotent**
 /usage provider <id>   filter by provider (e.g. anthropic)
 ```
 
-`/usage` renders natively in the TUI as a compact OpenCode-style popup (zero LLM
+The TUI slash palette shows **one entry per slash command**. Plain `/usage`
+(selected in the palette, or typed + Enter) runs the server command and `usage`
+tool — works in every client, costs one small model call. Selecting
+`/usage today|week|month|all` opens a **native OpenCode-style popup** (zero LLM
 tokens, theme-aware, Esc to close) — the same dialog system behind the theme
-and model selectors. Typing `/usage today` + Enter goes through the server
-command + `usage` tool instead — also fine, costs one small model call.
+and model selectors. (opencode's palette lists keymap slash commands *and*
+server commands without dedup, so `/usage` must live in exactly one of them;
+it lives in the server command.)
 
 ## CLI
 
@@ -200,7 +204,7 @@ database (with confirmation).
 - Tracking begins at install time; older history requires `opencode-usage import`.
 - Cache token breakdowns depend on providers reporting cache usage.
 - Cost data is an estimate of provider billing, computed from public pricing.
-- TUI slash palette renders `/usage` and `/usage today|week|month|all`;
+- TUI slash palette renders `/usage` (server command, LLM path) and `/usage today|week|month|all` (native popup) — one entry each;
   arbitrary filters (`/usage provider anthropic`) use the LLM command path.
 
 ## Development

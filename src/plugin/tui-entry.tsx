@@ -1,9 +1,16 @@
 /**
  * opencode-usage TUI plugin (referenced from ~/.config/opencode/tui.json).
  *
- * Registers /usage (plus /usage today|week|month|all) in the TUI command
- * palette; selecting one opens a native OpenCode dialog popup rendering the
- * usage report — zero LLM tokens consumed.
+ * Registers /usage today|week|month|all in the TUI command palette; selecting
+ * one opens a native OpenCode dialog popup rendering the usage report — zero
+ * LLM tokens consumed.
+ *
+ * Plain /usage is intentionally NOT registered here: it is already provided by
+ * the installed global command file (commands/usage.md, the server-side LLM
+ * path). opencode's slash autocomplete lists keymap slashName commands AND
+ * every server command with no dedup, so registering slashName usage here too
+ * made the palette show /usage twice (verified against 1.18.18 source,
+ * packages/tui/src/component/prompt/autocomplete.tsx).
  *
  * The popup reuses the host's dialog system (`api.ui.dialog` + `api.ui.Dialog`
  * / `api.ui.DialogSelect`), so it gets the same backdrop, theming, widths,
@@ -16,32 +23,13 @@
  */
 
 import type { TuiPluginApi } from "@opencode-ai/plugin/tui"
-import type { ReportPeriod } from "../types/usage.ts"
 import { openUsage } from "../ui/usage/usage-overlay.tsx"
 
 export default {
   id: "opencode-usage",
   tui: async (api: TuiPluginApi) => {
-    /** The currently open session when one exists, otherwise "today". */
-    function periodForCurrentRoute(): ReportPeriod {
-      const current = api.route.current
-      if (current?.name === "session" && typeof current.params?.sessionID === "string") {
-        return { kind: "session", sessionId: current.params.sessionID }
-      }
-      return { kind: "today" }
-    }
-
     api.keymap.registerLayer({
       commands: [
-        {
-          namespace: "palette",
-          name: "usage",
-          title: "OpenCode usage",
-          desc: "Usage for the current session",
-          category: "Usage",
-          slashName: "usage",
-          run: () => openUsage(api, periodForCurrentRoute()),
-        },
         {
           namespace: "palette",
           name: "usage.today",
