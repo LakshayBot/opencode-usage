@@ -42,7 +42,7 @@ describe("installer", () => {
       assert.equal(first.serverPlugin, "written")
       assert.equal(first.tuiPlugin, "written")
       assert.equal(first.tuiConfig, "created")
-      assert.equal(first.command, "written")
+      assert.equal(first.command, "none")
       assert.ok(fs.existsSync(paths.usageDbPath))
 
       // Second install: nothing changes.
@@ -53,13 +53,13 @@ describe("installer", () => {
       assert.equal(second.serverPlugin, "already-up-to-date")
       assert.equal(second.tuiPlugin, "already-up-to-date")
       assert.equal(second.tuiConfig, "already-present")
-      assert.equal(second.command, "already-up-to-date")
+      assert.equal(second.command, "none")
 
       assert.ok(fs.existsSync(paths.serverPluginPath))
       assert.ok(fs.readFileSync(paths.serverPluginPath, "utf8").startsWith("// opencode-usage:installed"))
       assert.ok(fs.existsSync(paths.tuiPluginPath))
-      assert.ok(fs.existsSync(paths.commandPath))
-      assert.equal(fs.readFileSync(paths.commandPath, "utf8"), usageCommandMarkdown())
+      // No server command file: /usage is the TUI popup (one palette entry).
+      assert.ok(!fs.existsSync(paths.commandPath))
 
       // tui.json points at the tui plugin via file:// spec.
       const tuiConfig = JSON.parse(fs.readFileSync(paths.tuiConfigPath, "utf8")) as { plugin: string[] }
@@ -98,7 +98,21 @@ describe("installer", () => {
       assert.ok(result.tuiConfigError?.includes("manually"))
       // Everything else still installed.
       assert.equal(result.serverPlugin, "written")
-      assert.equal(result.command, "written")
+      assert.equal(result.command, "none")
+      assert.ok(!fs.existsSync(paths.commandPath))
+    } finally {
+      rmrf(home)
+    }
+  })
+
+  it("removes a legacy command file from an old install (healing)", async () => {
+    const { paths, home } = await makeEnv()
+    try {
+      fs.mkdirSync(path.dirname(paths.commandPath), { recursive: true })
+      fs.writeFileSync(paths.commandPath, usageCommandMarkdown())
+      const result = install(paths, VERSION, { serverPluginContent: PLUGIN_SOURCE, tuiPluginContent: PLUGIN_SOURCE })
+      assert.equal(result.command, "removed")
+      assert.ok(!fs.existsSync(paths.commandPath), "legacy usage.md must be deleted")
     } finally {
       rmrf(home)
     }
@@ -110,6 +124,9 @@ describe("installer", () => {
       install(paths, VERSION, { serverPluginContent: PLUGIN_SOURCE, tuiPluginContent: PLUGIN_SOURCE })
       // user file next to ours must survive
       fs.writeFileSync(paths.commandPath.replace("usage.md", "mycommand.md"), "# user command\n")
+      // legacy command file from an old install must be removed on uninstall
+      fs.mkdirSync(path.dirname(paths.commandPath), { recursive: true })
+      fs.writeFileSync(paths.commandPath, usageCommandMarkdown())
       const foreign = path.join(path.dirname(paths.serverPluginPath), "user-plugin.js")
       fs.writeFileSync(foreign, "export default {}\n")
 
@@ -165,7 +182,7 @@ describe("installer", () => {
       assert.equal(after.serverPlugin, true)
       assert.equal(after.tuiPlugin, true)
       assert.equal(after.tuiConfig, true)
-      assert.equal(after.command, true)
+      assert.equal(after.command, false, "no /usage command file is installed")
       assert.equal(after.databaseExists, true)
       assert.equal(after.trackedMessages, 0)
     } finally {

@@ -116,11 +116,11 @@ async function cmdInstall(flags: Record<string, string | boolean>): Promise<void
   log(`  TUI plugin    : ${paths.tuiPluginPath} (${result.tuiPlugin})`)
   log(`  tui.json      : ${paths.tuiConfigPath} (${result.tuiConfig})`)
   if (result.tuiConfigError) log(`  NOTE          : ${result.tuiConfigError}`)
-  log(`  Command       : ${paths.commandPath} (${result.command})`)
+  log(`  Legacy command: ${result.command === "removed" ? "removed old usage.md (installed by a previous version)" : "none — /usage is the native TUI popup"}`)
   log(`  Database      : ${paths.usageDbPath}`)
   log("")
   log("Restart opencode (or start a new session) for the integration to load.")
-  log("Then type /usage (or /usage today|week|month|all) anywhere.")
+  log("Select /usage in the palette for the native report popup (zero tokens, any model).")
 }
 
 // ---------------------------------------------------------------------------
@@ -161,7 +161,7 @@ function cmdStatus(): void {
   log(`Server plugin:        ${s.serverPlugin ? "Yes" : "No"}  ${paths.serverPluginPath}`)
   log(`TUI plugin:           ${s.tuiPlugin ? "Yes" : "No"}  ${paths.tuiPluginPath}`)
   log(`tui.json entry:       ${s.tuiConfig ? "Yes" : "No"}`)
-  log(`Command /usage:       ${s.command ? "Yes" : "No"}`)
+  log(`Legacy command file:  ${s.command ? "Yes (run install to remove)" : "No"}`)
   log(`Tracking database:    ${s.databaseExists ? "Yes" : "No"}  ${s.dbPath}`)
   log(`Tracked model calls:  ${s.trackedMessages === null ? "n/a" : s.trackedMessages.toLocaleString("en-US")}`)
   log(`Tracking since:       ${s.trackingSince ?? "n/a"}`)

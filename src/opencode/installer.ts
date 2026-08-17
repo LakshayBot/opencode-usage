@@ -59,7 +59,8 @@ export interface InstallResult {
   tuiPlugin: "written" | "already-up-to-date"
   tuiConfig: "created" | "updated" | "already-present" | "error"
   tuiConfigError?: string
-  command: "written" | "already-up-to-date"
+  /** Legacy server command file `commands/usage.md` from pre-0.1.5 installs. */
+  command: "removed" | "none"
   database: "created" | "already-initialized"
   dbPath: string
   version: string
@@ -81,7 +82,7 @@ export function install(paths: Paths, version: string, options: InstallOptions =
     serverPlugin: "already-up-to-date",
     tuiPlugin: "already-up-to-date",
     tuiConfig: "already-present",
-    command: "already-up-to-date",
+    command: "none",
     database: "already-initialized",
     dbPath: paths.usageDbPath,
     version,
@@ -107,9 +108,17 @@ export function install(paths: Paths, version: string, options: InstallOptions =
   result.tuiConfig = tuiState.state
   result.tuiConfigError = tuiState.error
 
-  // 4. Global command file.
-  if (writeIfChanged(paths.commandPath, usageCommandMarkdown())) {
-    result.command = "written"
+  // 4. Legacy server command file. Plain /usage is owned by the TUI plugin's
+  // native popup (opencode's slash autocomplete lists keymap commands AND
+  // server commands without dedup, so /usage must exist in exactly one place).
+  // A previous version wrote commands/usage.md — remove it if we own it, so
+  // reinstalling heals old installs and the palette shows a single /usage.
+  if (fs.existsSync(paths.commandPath)) {
+    const content = fs.readFileSync(paths.commandPath, "utf8")
+    if (isOwnedCommandFile(content)) {
+      fs.rmSync(paths.commandPath, { force: true })
+      result.command = "removed"
+    }
   }
 
   // 5. Database.

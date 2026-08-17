@@ -43,16 +43,21 @@ npm install -g @skinnysheep/opencode-usage
 opencode-usage install
 ```
 
-Restart opencode (or start a new session). Type `/usage` anywhere — in any project.
+Restart opencode (or start a new session). Select `/usage` in the palette — the native report popup opens in any project.
 
 ### Install what it does
 
 | Step | Where | Mechanism |
 |---|---|---|
-| Server plugin (captures usage) | `~/.config/opencode/plugin/opencode-usage.js` | auto-discovered plugin directory |
-| TUI plugin (native `/usage` view) | `~/.config/opencode/opencode-usage.tui.js` + entry in `tui.json` | official TUI plugin loading |
-| `/usage` command (LLM path) | `~/.config/opencode/commands/usage.md` | auto-discovered global commands |
+| Server plugin (captures usage + registers the `usage` tool) | `~/.config/opencode/plugin/opencode-usage.js` | auto-discovered plugin directory |
+| TUI plugin (native `/usage` popup) | `~/.config/opencode/opencode-usage.tui.js` + entry in `tui.json` | official TUI plugin loading |
 | Tracking database | `~/.local/share/opencode-usage/usage.db` | SQLite (WAL) |
+
+No global command file is installed: `/usage` lives in the TUI plugin as a native
+popup. (opencode's slash palette lists keymap commands *and* server commands
+without dedup, so `/usage` must exist in exactly one place — and a command file
+would render the report as a chat message instead of a popup.) If a previous
+version left `commands/usage.md`, `install` removes it.
 
 On Windows these are `%APPDATA%\opencode\...` and `%LOCALAPPDATA%\opencode-usage\usage.db`.
 
@@ -70,14 +75,15 @@ Your existing `opencode.json` is **never modified**. `install` is **idempotent**
 /usage provider <id>   filter by provider (e.g. anthropic)
 ```
 
-The TUI slash palette shows **one entry per slash command**. Plain `/usage`
-(selected in the palette, or typed + Enter) runs the server command and `usage`
-tool — works in every client, costs one small model call. Selecting
-`/usage today|week|month|all` opens a **native OpenCode-style popup** (zero LLM
-tokens, theme-aware, Esc to close) — the same dialog system behind the theme
-and model selectors. (opencode's palette lists keymap slash commands *and*
-server commands without dedup, so `/usage` must live in exactly one of them;
-it lives in the server command.)
+The TUI slash palette shows **one entry per slash command**. Selecting any of
+them opens a **native OpenCode-style popup** (zero LLM tokens, theme-aware, Esc
+to close) — the same dialog system behind the theme and model selectors — so
+the report looks and behaves identically no matter which model is active.
+Plain `/usage` shows the current session (falling back to today); the other
+entries filter by period. Typing `/usage ...` + Enter instead sends the text to
+the model — the `usage` tool is still registered by the server plugin, so a
+capable model can still produce the report on request (one small model call,
+best-effort; use the palette for the byte-exact popup).
 
 ## CLI
 
@@ -204,8 +210,9 @@ database (with confirmation).
 - Tracking begins at install time; older history requires `opencode-usage import`.
 - Cache token breakdowns depend on providers reporting cache usage.
 - Cost data is an estimate of provider billing, computed from public pricing.
-- TUI slash palette renders `/usage` (server command, LLM path) and `/usage today|week|month|all` (native popup) — one entry each;
-  arbitrary filters (`/usage provider anthropic`) use the LLM command path.
+- The TUI slash palette always shows exactly one entry per slash command; arbitrary filters
+  (`/usage provider anthropic`) are not available in the popup — the typed `/usage ...` path can
+  still work via the `usage` tool when the model cooperates (best-effort).
 
 ## Development
 
