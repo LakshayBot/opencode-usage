@@ -1,7 +1,8 @@
 import { describe, it } from "node:test"
 import assert from "node:assert/strict"
+import fs from "node:fs"
 import path from "node:path"
-import { pathsFor } from "./helpers.ts"
+import { tmpDir, rmrf, pathsFor } from "./helpers.ts"
 
 describe("platform path resolution", () => {
   const base = {
@@ -33,7 +34,7 @@ describe("platform path resolution", () => {
     assert.equal(paths.configDir, "/custom/config")
   })
 
-  it("resolves Windows paths from APPDATA/LOCALAPPDATA", async () => {
+  it("defaults Windows to home XDG paths when no opencode install is found", async () => {
     const originalPlatform = Object.getOwnPropertyDescriptor(process, "platform")
     Object.defineProperty(process, "platform", { value: "win32" })
     try {
@@ -42,12 +43,72 @@ describe("platform path resolution", () => {
         APPDATA: "C:\\Users\\t\\AppData\\Roaming",
         LOCALAPPDATA: "C:\\Users\\t\\AppData\\Local",
       })
-      // path.join uses the host separators; normalize for cross-platform asserts.
+      // No opencode.json / opencode.db anywhere → default to home XDG, matching
+      // current 1.18.x opencode builds (they do NOT use %APPDATA% on Windows).
       const asWin = (p: string) => p.replaceAll("/", "\\")
-      assert.equal(asWin(paths.configDir), "C:\\Users\\t\\AppData\\Roaming\\opencode")
-      assert.equal(asWin(paths.opencodeDataDir), "C:\\Users\\t\\AppData\\Local\\opencode")
-      assert.equal(asWin(paths.usageDbPath), "C:\\Users\\t\\AppData\\Local\\opencode-usage\\usage.db")
+      assert.equal(asWin(paths.configDir), "C:\\Users\\t\\.config\\opencode")
+      assert.equal(asWin(paths.opencodeDataDir), "C:\\Users\\t\\.local\\share\\opencode")
+      assert.equal(asWin(paths.usageDbPath), "C:\\Users\\t\\.local\\share\\opencode-usage\\usage.db")
     } finally {
+      if (originalPlatform) Object.defineProperty(process, "platform", originalPlatform)
+    }
+  })
+
+  it("Windows probe prefers the root holding a live opencode install (home XDG)", async () => {
+    const originalPlatform = Object.getOwnPropertyDescriptor(process, "platform")
+    Object.defineProperty(process, "platform", { value: "win32" })
+    const home = tmpDir()
+    try {
+      fs.mkdirSync(path.join(home, ".config", "opencode"), { recursive: true })
+      fs.writeFileSync(path.join(home, ".config", "opencode", "opencode.json"), "{}")
+      const paths = await pathsFor({
+        OPENCODE_TEST_HOME: home,
+        APPDATA: path.join(home, "AppData", "Roaming"),
+        LOCALAPPDATA: path.join(home, "AppData", "Local"),
+      })
+      assert.equal(paths.configDir, path.join(home, ".config", "opencode"))
+      assert.equal(paths.opencodeDataDir, path.join(home, ".local", "share", "opencode"))
+    } finally {
+      rmrf(home)
+      if (originalPlatform) Object.defineProperty(process, "platform", originalPlatform)
+    }
+  })
+
+  it("Windows probe prefers %APPDATA% when only it holds a live install", async () => {
+    const originalPlatform = Object.getOwnPropertyDescriptor(process, "platform")
+    Object.defineProperty(process, "platform", { value: "win32" })
+    const home = tmpDir()
+    try {
+      fs.mkdirSync(path.join(home, "AppData", "Roaming", "opencode"), { recursive: true })
+      fs.writeFileSync(path.join(home, "AppData", "Roaming", "opencode", "opencode.json"), "{}")
+      const paths = await pathsFor({
+        OPENCODE_TEST_HOME: home,
+        APPDATA: path.join(home, "AppData", "Roaming"),
+        LOCALAPPDATA: path.join(home, "AppData", "Local"),
+      })
+      assert.equal(paths.configDir, path.join(home, "AppData", "Roaming", "opencode"))
+    } finally {
+      rmrf(home)
+      if (originalPlatform) Object.defineProperty(process, "platform", originalPlatform)
+    }
+  })
+
+  it("Windows probe picks %LOCALAPPDATA% data dir when opencode.db lives there", async () => {
+    const originalPlatform = Object.getOwnPropertyDescriptor(process, "platform")
+    Object.defineProperty(process, "platform", { value: "win32" })
+    const home = tmpDir()
+    try {
+      fs.mkdirSync(path.join(home, "AppData", "Local", "opencode"), { recursive: true })
+      fs.writeFileSync(path.join(home, "AppData", "Local", "opencode", "opencode.db"), "")
+      const paths = await pathsFor({
+        OPENCODE_TEST_HOME: home,
+        APPDATA: path.join(home, "AppData", "Roaming"),
+        LOCALAPPDATA: path.join(home, "AppData", "Local"),
+      })
+      assert.equal(paths.opencodeDataDir, path.join(home, "AppData", "Local", "opencode"))
+      assert.equal(paths.usageDataDir, path.join(home, "AppData", "Local", "opencode-usage"))
+    } finally {
+      rmrf(home)
       if (originalPlatform) Object.defineProperty(process, "platform", originalPlatform)
     }
   })

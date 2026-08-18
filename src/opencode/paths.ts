@@ -1,17 +1,30 @@
 /**
  * Platform-aware path resolution.
  *
- * Mirrors opencode's own path scheme exactly (opencode uses the `xdg-basedir`
- * package; verified in packages/core/src/global.ts):
+ * Mirrors opencode's own path scheme so the files we install (plugins,
+ * tui.json, usage.db) land exactly where the running opencode reads them.
  *
- *   config dir  : $OPENCODE_CONFIG_DIR ?? (win32: %APPDATA%/opencode   : $XDG_CONFIG_HOME|~/.config + /opencode)
- *   data dir    : (win32: %LOCALAPPDATA%/opencode  : $XDG_DATA_HOME|~/.local/share + /opencode)
+ * POSIX: opencode uses xdg-basedir → $XDG_CONFIG_HOME|~/.config for config
+ * and $XDG_DATA_HOME|~/.local/share for data (packages/core/src/global.ts).
  *
- * Our usage database lives in a sibling data dir named `opencode-usage`.
+ * Windows: opencode's behavior is NOT consistent across builds — xdg-basedir
+ * 5.x maps win32 to %APPDATA%/%LOCALAPPDATA%, but current 1.18.x installs have
+ * been observed using home-dir XDG paths (~/.config/opencode,
+ * ~/.local/share/opencode) with no %APPDATA% exception at all (verified on a
+ * real Windows 1.18.18 machine: config + opencode.db live there, %APPDATA% is
+ * never read). So on Windows we PROBE the candidate roots and prefer the one
+ * that already holds live opencode files (opencode.json / opencode.db),
+ * defaulting to the home-XDG root for a fresh machine.
+ *
+ * Overrides, in priority order:
+ *   $OPENCODE_CONFIG_DIR        (config dir only)
+ *   $XDG_CONFIG_HOME/$XDG_DATA_HOME
+ *   installed-opencode probe    (win32 only)
  *
  * All functions accept an env object for testability.
  */
 
+import fs from "node:fs"
 import os from "node:os"
 import path from "node:path"
 
@@ -42,24 +55,57 @@ function homeDir(env: Env): string {
   return env.OPENCODE_TEST_HOME ?? env.HOME ?? os.homedir()
 }
 
-function xdgConfigHome(env: Env): string {
-  if (env.XDG_CONFIG_HOME) return env.XDG_CONFIG_HOME
-  if (process.platform === "win32") return env.APPDATA ?? path.join(homeDir(env), "AppData", "Roaming")
+function homeConfigRoot(env: Env): string {
   return path.join(homeDir(env), ".config")
 }
 
-function xdgDataHome(env: Env): string {
-  if (env.XDG_DATA_HOME) return env.XDG_DATA_HOME
-  if (process.platform === "win32") return env.LOCALAPPDATA ?? path.join(homeDir(env), "AppData", "Local")
+function homeDataRoot(env: Env): string {
   return path.join(homeDir(env), ".local", "share")
+}
+
+function appDataConfigRoot(env: Env): string {
+  return env.APPDATA ?? path.join(homeDir(env), "AppData", "Roaming")
+}
+
+function appDataDataRoot(env: Env): string {
+  return env.LOCALAPPDATA ?? path.join(homeDir(env), "AppData", "Local")
+}
+
+type XdgKind = "config" | "data"
+
+/** True when the root already holds a live opencode install's files. */
+function looksLikeOpencodeRoot(root: string, kind: XdgKind): boolean {
+  const file =
+    kind === "config" ? path.join(root, "opencode", "opencode.json") : path.join(root, "opencode", "opencode.db")
+  return fs.existsSync(file)
+}
+
+/**
+ * Resolve the XDG root (config or data) opencode actually uses on this machine.
+ * Env overrides win; on Windows a live-install probe chooses between the
+ * home-XDG root and the %APPDATA%/%LOCALAPPDATA% root.
+ */
+function xdgRoot(env: Env, kind: XdgKind): string {
+  const override = kind === "config" ? env.XDG_CONFIG_HOME : env.XDG_DATA_HOME
+  if (override) return override
+
+  const homeRoot = kind === "config" ? homeConfigRoot(env) : homeDataRoot(env)
+  if (process.platform !== "win32") return homeRoot
+
+  const appdataRoot = kind === "config" ? appDataConfigRoot(env) : appDataDataRoot(env)
+  const homeLive = looksLikeOpencodeRoot(homeRoot, kind)
+  const appdataLive = looksLikeOpencodeRoot(appdataRoot, kind)
+  // Prefer the root holding opencode's real files; tie / unknown → home XDG.
+  if (appdataLive && !homeLive) return appdataRoot
+  return homeRoot
 }
 
 export function resolvePaths(env: Env = process.env): Paths {
   const configDir = env.OPENCODE_CONFIG_DIR
     ? path.resolve(env.OPENCODE_CONFIG_DIR)
-    : path.join(xdgConfigHome(env), "opencode")
-  const opencodeDataDir = path.join(xdgDataHome(env), "opencode")
-  const usageDataDir = path.join(xdgDataHome(env), "opencode-usage")
+    : path.join(xdgRoot(env, "config"), "opencode")
+  const opencodeDataDir = path.join(xdgRoot(env, "data"), "opencode")
+  const usageDataDir = path.join(xdgRoot(env, "data"), "opencode-usage")
 
   return {
     configDir,

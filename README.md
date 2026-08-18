@@ -59,7 +59,7 @@ without dedup, so `/usage` must exist in exactly one place — and a command fil
 would render the report as a chat message instead of a popup.) If a previous
 version left `commands/usage.md`, `install` removes it.
 
-On Windows these are `%APPDATA%\opencode\...` and `%LOCALAPPDATA%\opencode-usage\usage.db`.
+On Windows these live under the home-dir XDG paths too — `C:\Users\you\.config\opencode\...` and `C:\Users\you\.local\share\opencode-usage\usage.db` — matching how current opencode builds resolve paths on Windows (several 1.18.x builds do **not** use `%APPDATA%`). The installer **probes** for whichever directory holds a live opencode install (an existing `opencode.json` / `opencode.db`) and installs there; on a fresh machine it defaults to the home XDG paths. `$OPENCODE_CONFIG_DIR` and `$XDG_CONFIG_HOME`/`$XDG_DATA_HOME` still override everything.
 
 Your existing `opencode.json` is **never modified**. `install` is **idempotent** — safe to run any number of times.
 
@@ -137,8 +137,8 @@ provider metadata — never estimated by token counting.
 
 ## Where data is stored
 
-- Database: `~/.local/share/opencode-usage/usage.db` (Linux/macOS) or
-  `%LOCALAPPDATA%\opencode-usage\usage.db` (Windows)
+- Database: `~/.local/share/opencode-usage/usage.db` (Linux/macOS); on Windows the
+  same home XDG location `C:\Users\you\.local\share\opencode-usage\usage.db` (probed, see Install)
 - SQLite, WAL mode, schema-versioned migrations (forward-only, never destructive)
 - Every project on the machine writes into this one shared database
 

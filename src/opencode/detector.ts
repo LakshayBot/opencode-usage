@@ -20,10 +20,13 @@ const CANDIDATE_NAMES = ["opencode", "opencode.exe"]
 export function detectOpenCode(env: Record<string, string | undefined> = process.env): OpenCodeDetection {
   const result: OpenCodeDetection = { found: false, binaryPath: null, version: null, onPath: false }
 
-  // 1. PATH lookup
+  // 1. PATH lookup — resolve in PATH order like the shell: the FIRST existing
+  //     match wins. (A plain `break` used to exit only the innermost loop, so
+  //     the LAST match overwrote the first — e.g. detecting a stale ~/.bun/bin
+  //     opencode.exe instead of the actual npm install.)
   const pathEnv = env.PATH ?? ""
   const extensions = process.platform === "win32" ? ["", ".cmd", ".exe"] : [""]
-  for (const dir of pathEnv.split(path.delimiter)) {
+  outer: for (const dir of pathEnv.split(path.delimiter)) {
     if (!dir) continue
     for (const name of CANDIDATE_NAMES) {
       for (const ext of extensions) {
@@ -31,7 +34,7 @@ export function detectOpenCode(env: Record<string, string | undefined> = process
         if (fs.existsSync(candidate)) {
           result.binaryPath = candidate
           result.onPath = true
-          break
+          break outer
         }
       }
     }
