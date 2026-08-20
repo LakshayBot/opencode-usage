@@ -4,6 +4,14 @@
   "description": "Track OpenCode token usage, cache statistics and estimated costs across all your projects. Global /usage slash command.",
   "type": "module",
   "license": "MIT",
+  "homepage": "https://github.com/LakshayBot/opencode-usage",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/LakshayBot/opencode-usage.git"
+  },
+  "bugs": {
+    "url": "https://github.com/LakshayBot/opencode-usage/issues"
+  },
   "keywords": [
     "opencode",
     "usage",

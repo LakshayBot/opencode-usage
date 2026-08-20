@@ -2,6 +2,9 @@
 
 [![npm](https://img.shields.io/npm/v/@skinnysheep/opencode-usage)](https://www.npmjs.com/package/@skinnysheep/opencode-usage)
 [![GitHub](https://img.shields.io/badge/source-github-181717?logo=github)](https://github.com/LakshayBot/opencode-usage)
+[![GitHub stars](https://img.shields.io/github/stars/LakshayBot/opencode-usage?style=social)](https://github.com/LakshayBot/opencode-usage)
+
+**⭐ Like this plugin? Star the repo — it helps others discover it.**
 
 Track your **OpenCode** token usage, cache statistics and estimated costs — across **all** your projects, from one global database.
 
