@@ -43,10 +43,18 @@ Requires **Node.js >= 23.4** for the CLI (the plugin itself runs inside opencode
 
 ```bash
 npm install -g @skinnysheep/opencode-usage
-opencode-usage install
 ```
 
-Restart opencode (or start a new session). Select `/usage` in the palette — the native report popup opens in any project.
+That's it — **global installs run the integration automatically** (a `postinstall`
+hook performs the same idempotent `install` as `opencode-usage install`), so you
+don't need a second command. Just restart opencode (or start a new session) and
+select `/usage` in the palette — the native report popup opens in any project.
+
+- Only global installs trigger it; installing the package as a regular
+dependency never touches your config.
+- Upgrades re-run it, so fixes/improvements apply on the next `npm update -g`.
+- Disable it with `OPENCODE_USAGE_AUTO_INSTALL=0` (or `npm i -g --ignore-scripts`) and run
+  `opencode-usage install` whenever you want.
 
 ### Install what it does
 

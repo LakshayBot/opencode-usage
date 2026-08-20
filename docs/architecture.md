@@ -152,7 +152,15 @@ Empirical tests (isolated `OPENCODE_CONFIG_DIR` + fake HOME on the real binary) 
 
 (The TUI runtime reads a separate config stream — `tui.json`/`tui.jsonc` only — and never scans the plugin directory. A plugin module may export `server` OR `tui`, not both.)
 
-So `opencode-usage install` performs exactly these steps, each idempotent:
+**Zero-step setup:** `npm i -g` runs a `postinstall` hook that invokes the SAME
+exact code path as `opencode-usage install` (the compiled CLI `install()`) — so
+globally installing or upgrading the package is the whole setup (just restart
+opencode). The hook only fires for global installs (`npm_config_global ===
+"true"`; never when the package is a plain dependency), is disabled via
+`OPENCODE_USAGE_AUTO_INSTALL=0`, and is best-effort (any failure prints the
+manual fallback and never fails the npm install). See `scripts/postinstall.mjs`.
+
+`opencode-usage install` performs exactly these steps, each idempotent:
 
 1. **Detect opencode**: `opencode --version` via PATH, `~/.opencode/bin/opencode`, `~/.local/share/opencode/bin`; non-fatal.
 2. **Resolve global config dir** (xdg-basedir semantics + `OPENCODE_CONFIG_DIR` override): `~/.config/opencode` on macOS/Linux; on Windows a **live-install probe** chooses between the home XDG root (`~/.config/opencode`) and the `%APPDATA%` root — current 1.18.x builds use the home XDG root and never read `%APPDATA%` (verified on a real Windows machine), while `xdg-basedir@5` maps win32 to `%APPDATA%`; the probe prefers whichever root already contains `opencode.json`/`opencode.db` and defaults to the home XDG root.

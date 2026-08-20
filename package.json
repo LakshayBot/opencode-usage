@@ -1,6 +1,6 @@
 {
   "name": "@skinnysheep/opencode-usage",
-  "version": "0.1.6",
+  "version": "0.1.7",
   "description": "Track OpenCode token usage, cache statistics and estimated costs across all your projects. Global /usage slash command.",
   "type": "module",
   "license": "MIT",
@@ -37,12 +37,14 @@
   "files": [
     "dist",
     "README.md",
-    "docs"
+    "docs",
+    "scripts/postinstall.mjs"
   ],
   "scripts": {
     "build": "node scripts/build.mjs",
     "test": "node --test \"tests/**/*.test.ts\"",
-    "prepublishOnly": "npm run build && npm test"
+    "prepublishOnly": "npm run build && npm test",
+    "postinstall": "node scripts/postinstall.mjs"
   },
   "devDependencies": {
     "@opencode-ai/plugin": "1.18.18",
