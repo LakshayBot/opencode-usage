@@ -13,7 +13,7 @@
 import type { JSX } from "solid-js"
 import { useBindings } from "@opentui/keymap/solid"
 import type { TuiPluginApi } from "@opencode-ai/plugin/tui"
-import { formatCost, formatTokens } from "./usage-format.ts"
+import { formatCost, formatNumber, formatTokens } from "./usage-format.ts"
 import type { UsageSessionRowModel } from "./usage-view-model.ts"
 
 export function UsageSessionsDialog(props: {
@@ -41,7 +41,7 @@ export function UsageSessionsDialog(props: {
       title="Usage by session"
       options={props.rows.map((row) => ({
         title: row.displayTitle,
-        footer: `${formatTokens(row.totalTokens)} · ${formatCost(row.cost)}`,
+        footer: `${formatTokens(row.totalTokens)} · ${formatNumber(row.requests)} req · ${formatCost(row.cost)}`,
         value: row,
       }))}
       flat

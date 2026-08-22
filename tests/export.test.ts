@@ -3,6 +3,7 @@ import assert from "node:assert/strict"
 import fs from "node:fs"
 import path from "node:path"
 import { tmpDir, rmrf, seedUsageEvents } from "./helpers.ts"
+import { UsageDatabase } from "../src/storage/database.ts"
 import { csvEscape, runExport } from "../src/cli/export.ts"
 
 const DAILY_HEADER = "label,start,end,input_tokens,output_tokens,total_tokens,cost"
@@ -238,6 +239,43 @@ describe("runExport output target", () => {
       assert.ok(captured.includes("\n\n# models\n"))
     } finally {
       process.stdout.write = original
+      rmrf(dir)
+    }
+  })
+})
+
+describe("runExport full-history daily buckets", () => {
+  it("never applies the TUI graph's 30-bucket display cap to an export", () => {
+    // regression: `export all` reused the graph timeline wholesale, silently
+    // dropping every daily bucket older than 30 days while the models section
+    // still covered all time — the two sections disagreed.
+    const dir = tmpDir()
+    try {
+      const dbPath = path.join(dir, "usage.db")
+      const now = new Date(2026, 5, 15, 14, 20, 0, 0).getTime() // Mon Jun 15 2026
+      const db = UsageDatabase.open(dbPath)
+      const insert = db.raw.prepare(
+        `INSERT INTO usage_events (
+           event_key, timestamp, session_id, provider, model,
+           input_tokens, output_tokens, cache_read_tokens, cache_write_tokens,
+           total_tokens, cost, provider_reported_cache
+         ) VALUES (?, ?, 'ses_export', 'anthropic', 'claude-sonnet-4-6', 1000, 100, 0, 0, 1100, 0.01, 0)`,
+      )
+      for (let i = 0; i < 40; i++) insert.run(`k${i}`, new Date(2026, 4, 7 + i, 12, 0).getTime()) // May 7 .. Jun 15
+      db.close()
+
+      const file = path.join(dir, "export-all.json")
+      runExport({ dbPath, flags: { out: file }, args: ["all"], now })
+      const doc = JSON.parse(fs.readFileSync(file, "utf8")) as {
+        daily: Array<{ start: number; totalTokens: number }>
+        models: Array<{ model: string; requests: number }>
+      }
+      assert.equal(doc.models.length, 1)
+      assert.equal(doc.models[0]!.requests, 40)
+      assert.equal(doc.daily.length, 40) // would be 30 under the display cap
+      assert.equal(doc.daily[0]!.start, new Date(2026, 4, 7).getTime())
+      assert.equal(doc.daily.reduce((sum, b) => sum + b.totalTokens, 0), 40 * 1100)
+    } finally {
       rmrf(dir)
     }
   })

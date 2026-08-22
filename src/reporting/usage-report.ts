@@ -30,6 +30,11 @@ import { UsageDatabase } from "../storage/database.ts"
 export interface ReportOptions {
   pricing: PricingProvider
   now?: number
+  /**
+   * Timeline-only: cap for the 'all' period's daily buckets. Defaults to the
+   * TUI display cap; pass null for unbounded output (data exports).
+   */
+  maxBuckets?: number | null
 }
 
 /** Cap for the per-session breakdown: only the top 50 sessions by spend. */
@@ -430,9 +435,11 @@ export function computeUsageTimeline(db: UsageDatabase, period: ReportPeriod, fi
     })
     cursor = next
   }
-  // 'all' keeps only the most recent window; older events fall outside it.
-  if (period.kind === "all" && buckets.length > MAX_TIMELINE_BUCKETS) {
-    buckets = buckets.slice(buckets.length - MAX_TIMELINE_BUCKETS)
+  // 'all' keeps only the most recent window by default (TUI display cap);
+  // maxBuckets: null lifts it for consumers that need full history.
+  const maxBuckets = options.maxBuckets === undefined ? MAX_TIMELINE_BUCKETS : options.maxBuckets
+  if (period.kind === "all" && maxBuckets !== null && buckets.length > maxBuckets) {
+    buckets = buckets.slice(buckets.length - maxBuckets)
   }
 
   // ---- aggregate ------------------------------------------------------------

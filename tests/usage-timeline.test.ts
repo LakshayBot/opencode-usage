@@ -181,6 +181,39 @@ describe("computeUsageTimeline", () => {
     }
   })
 
+  it("maxBuckets: null lifts the 'all' display cap (data exports need full history)", () => {
+    const dir = tmpDir()
+    try {
+      const dbPath = path.join(dir, "usage.db")
+      // one event per day for 40 days, ending today
+      seedEvents(
+        dbPath,
+        Array.from({ length: 40 }, (_, i) => ({
+          key: `d${i}`,
+          ts: new Date(2026, 4, 7 + i, 12, 0).getTime(), // May 7 .. Jun 15
+        })),
+      )
+
+      // default keeps the TUI's 30-bucket cap …
+      assert.equal(timelineFor(dbPath, { kind: "all" }).length, 30)
+
+      // … while maxBuckets: null spans every day back to the first event
+      const db = UsageDatabase.open(dbPath, { readOnly: true })
+      try {
+        const unbounded = computeUsageTimeline(db, { kind: "all" }, {}, { pricing: new HybridPricingProvider(db), now: NOW, maxBuckets: null })
+        assert.equal(unbounded.length, 40)
+        assert.equal(unbounded[0]!.start, new Date(2026, 4, 7).getTime())
+        assert.equal(unbounded[39]!.label, "Mon 15")
+        assert.equal(unbounded.filter((b) => b.totalTokens > 0).length, 40)
+        assert.equal(sumTokens(unbounded), 40 * 1100)
+      } finally {
+        db.close()
+      }
+    } finally {
+      rmrf(dir)
+    }
+  })
+
   it("buckets the current session hourly across its own span", () => {
     const dir = tmpDir()
     try {

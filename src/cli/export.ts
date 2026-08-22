@@ -2,8 +2,9 @@
  * `opencode-usage export` — dump a period's usage as JSON or CSV.
  *
  * All numbers come from the shared reporting layer: daily buckets from
- * computeUsageTimeline (same selection/axis rules as the TUI graph) and
- * per-model rows from computeReport (same as `stats`). This module only
+ * computeUsageTimeline (same selection/axis rules as the TUI graph, but
+ * UNBOUNDED — the graph's 30-bucket display cap never truncates an export)
+ * and per-model rows from computeReport (same as `stats`). This module only
  * formats — no SQL lives here.
  */
 
@@ -17,6 +18,7 @@ import {
   computeReport,
   computeUsageTimeline,
   periodLabel,
+  type ReportOptions,
   type TimelineBucket,
 } from "../reporting/usage-report.ts"
 import type { UsageReport } from "../types/usage.ts"
@@ -91,7 +93,7 @@ export function runExport(options: RunExportOptions = {}): void {
   let models: UsageReport["perModel"]
   try {
     const pricing = new HybridPricingProvider(db)
-    const reportOptions = options.now === undefined ? { pricing } : { pricing, now: options.now }
+    const reportOptions: ReportOptions = { pricing, now: options.now, maxBuckets: null }
     daily = computeUsageTimeline(db, period, {}, reportOptions)
     models = computeReport(db, period, {}, reportOptions).perModel
   } finally {
