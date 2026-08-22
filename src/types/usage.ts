@@ -103,6 +103,24 @@ export interface ProviderRow {
   cost: number | null
 }
 
+export interface AgentRow {
+  agent: string
+  requests: number
+  totalTokens: number
+  inputTokens: number
+  outputTokens: number
+  cost: number | null
+}
+
+export interface ProjectRow {
+  project: string
+  requests: number
+  totalTokens: number
+  inputTokens: number
+  outputTokens: number
+  cost: number | null
+}
+
 export interface UsageReport {
   period: ReportPeriod
   periodLabel: string
@@ -156,6 +174,8 @@ export interface UsageReport {
 
   perModel: ModelRow[]
   perProvider: ProviderRow[]
+  perAgent: AgentRow[]
+  perProject: ProjectRow[]
 
   averages: {
     /** Gross input tokens (incl. cache) per user message. */

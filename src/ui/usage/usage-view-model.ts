@@ -8,7 +8,7 @@
  */
 
 import type { PeriodComparison, TimelineBucket } from "../../reporting/usage-report.ts"
-import type { ModelRow, ProviderRow, ReportPeriod, UsageReport } from "../../types/usage.ts"
+import type { AgentRow, ModelRow, ProjectRow, ProviderRow, ReportPeriod, UsageReport } from "../../types/usage.ts"
 import { formatCost, formatTokens } from "./usage-format.ts"
 
 /** The primary summary shown on the first /usage screen. */
@@ -92,6 +92,46 @@ export function buildUsageProviders(report: UsageReport): UsageProviderRowModel[
     provider: row.provider,
     requests: row.requests,
     totalTokens: row.totalTokens,
+    cost: row.cost,
+  }))
+}
+
+export interface UsageAgentRowModel {
+  agent: string
+  requests: number
+  totalTokens: number
+  inputTokens: number
+  outputTokens: number
+  cost: number | null
+}
+
+export function buildUsageAgents(report: UsageReport): UsageAgentRowModel[] {
+  return report.perAgent.map((row: AgentRow) => ({
+    agent: row.agent,
+    requests: row.requests,
+    totalTokens: row.totalTokens,
+    inputTokens: row.inputTokens,
+    outputTokens: row.outputTokens,
+    cost: row.cost,
+  }))
+}
+
+export interface UsageProjectRowModel {
+  project: string
+  requests: number
+  totalTokens: number
+  inputTokens: number
+  outputTokens: number
+  cost: number | null
+}
+
+export function buildUsageProjects(report: UsageReport): UsageProjectRowModel[] {
+  return report.perProject.map((row: ProjectRow) => ({
+    project: row.project,
+    requests: row.requests,
+    totalTokens: row.totalTokens,
+    inputTokens: row.inputTokens,
+    outputTokens: row.outputTokens,
     cost: row.cost,
   }))
 }

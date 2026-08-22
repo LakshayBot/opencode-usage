@@ -37,6 +37,7 @@ interface EventRow {
   model: string | null
   agent: string | null
   parent_session_id: string | null
+  project_id: string | null
   input_tokens: number
   output_tokens: number
   reasoning_tokens: number
@@ -325,7 +326,7 @@ export function computeUsageTimeline(db: UsageDatabase, period: ReportPeriod, fi
   const whereSql = clauses.length ? `WHERE ${clauses.join(" AND ")}` : ""
   const eventRows = db.raw
     .prepare(
-      `SELECT e.provider, e.model, e.agent, e.parent_session_id,
+      `SELECT e.provider, e.model, e.agent, e.parent_session_id, e.project_id,
               e.input_tokens, e.output_tokens, e.reasoning_tokens,
               e.cache_read_tokens, e.cache_write_tokens, e.total_tokens,
               e.cost, e.provider_reported_cache, e.timestamp
@@ -435,7 +436,7 @@ export function computeReport(db: UsageDatabase, period: ReportPeriod, filter: R
   // ---- usage events -------------------------------------------------------
   const eventRows = db.raw
     .prepare(
-      `SELECT e.provider, e.model, e.agent, e.parent_session_id,
+      `SELECT e.provider, e.model, e.agent, e.parent_session_id, e.project_id,
               e.input_tokens, e.output_tokens, e.reasoning_tokens,
               e.cache_read_tokens, e.cache_write_tokens, e.total_tokens,
               e.cost, e.provider_reported_cache, e.timestamp
@@ -447,6 +448,8 @@ export function computeReport(db: UsageDatabase, period: ReportPeriod, filter: R
   const totals = emptyAgg()
   const perModel = new Map<string, AggRow>()
   const perProvider = new Map<string, AggRow>()
+  const perAgent = new Map<string, AggRow>()
+  const perProject = new Map<string, AggRow>()
   const cacheReportingEvents = { read: 0, write: 0, input: 0, count: 0 }
   let exactCost: number | null = null
   let largest: UsageReport["largestRequest"] = null
@@ -500,6 +503,26 @@ export function computeReport(db: UsageDatabase, period: ReportPeriod, filter: R
       perProvider.set(pKey, pRow)
     }
     aggregateInto(pRow, row)
+
+    // Null agent folds into 'main', matching counts.mainAgentRequests (which
+    // classifies every non-subagent, non-system event — null included — as main).
+    const aKey = row.agent ?? "main"
+    let aRow = perAgent.get(aKey)
+    if (!aRow) {
+      aRow = emptyAgg()
+      perAgent.set(aKey, aRow)
+    }
+    aggregateInto(aRow, row)
+
+    // Null project ids are real (events can arrive before project tracking),
+    // so they get an explicit label instead of being dropped or merged.
+    const prKey = row.project_id ?? "(no project)"
+    let prRow = perProject.get(prKey)
+    if (!prRow) {
+      prRow = emptyAgg()
+      perProject.set(prKey, prRow)
+    }
+    aggregateInto(prRow, row)
   }
 
   // ---- message / session counts -------------------------------------------
@@ -619,6 +642,30 @@ export function computeReport(db: UsageDatabase, period: ReportPeriod, filter: R
     }))
     .sort((a, b) => b.totalTokens - a.totalTokens)
 
+  // Agent/project rows lead with spend (cost desc, unknown cost last), then
+  // token volume as the tiebreaker.
+  const agentRows = [...perAgent.entries()]
+    .map(([agent, row]) => ({
+      agent,
+      requests: row.requests,
+      totalTokens: row.totalTokens,
+      inputTokens: row.inputTokens,
+      outputTokens: row.outputTokens,
+      cost: row.cost,
+    }))
+    .sort(costDescThenTokensDesc)
+
+  const projectRows = [...perProject.entries()]
+    .map(([project, row]) => ({
+      project,
+      requests: row.requests,
+      totalTokens: row.totalTokens,
+      inputTokens: row.inputTokens,
+      outputTokens: row.outputTokens,
+      cost: row.cost,
+    }))
+    .sort(costDescThenTokensDesc)
+
   const costSortable = modelRows.filter((row) => row.cost !== null)
   const mostUsed = modelRows[0] ?? null
   const mostExpensive = costSortable.length
@@ -665,6 +712,8 @@ export function computeReport(db: UsageDatabase, period: ReportPeriod, filter: R
     },
     perModel: modelRows,
     perProvider: providerRows,
+    perAgent: agentRows,
+    perProject: projectRows,
     averages: {
       inputTokensPerUserMessage: userMessages > 0 ? totals.grossInput / userMessages : null,
       outputTokensPerAssistantResponse: assistantMessages > 0 ? totals.outputTokens / assistantMessages : null,
@@ -673,6 +722,17 @@ export function computeReport(db: UsageDatabase, period: ReportPeriod, filter: R
     largestRequest: largest,
     tracking: { startedAt, lastActivity },
   }
+}
+
+/** Cost desc (null = unknown = last), then token volume desc. */
+function costDescThenTokensDesc(
+  a: { totalTokens: number; cost: number | null },
+  b: { totalTokens: number; cost: number | null },
+): number {
+  const aCost = a.cost ?? Number.NEGATIVE_INFINITY
+  const bCost = b.cost ?? Number.NEGATIVE_INFINITY
+  if (aCost !== bCost) return bCost - aCost
+  return b.totalTokens - a.totalTokens
 }
 
 function aggregateInto(target: AggRow, source: EventRow): void {

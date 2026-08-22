@@ -167,6 +167,145 @@ describe("computeReport", () => {
   })
 })
 
+describe("computeReport per-agent / per-project grouping", () => {
+  const now = Date.now()
+
+  interface SeedRow {
+    key: string
+    agent?: string | null
+    project?: string | null
+    parent?: string | null
+    tokens?: number
+    cost?: number | null
+    ts?: number
+  }
+
+  function seed(dbPath: string, rows: SeedRow[]): void {
+    const db = UsageDatabase.open(dbPath)
+    const insert = db.raw.prepare(
+      `INSERT INTO usage_events (
+         event_key, timestamp, session_id, agent, project_id, parent_session_id, provider, model,
+         input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, total_tokens, cost, provider_reported_cache
+       ) VALUES (?, ?, 'ses_grp', ?, ?, ?, 'anthropic', 'claude-sonnet-4-6', ?, ?, 0, 0, ?, ?, 0)`,
+    )
+    for (const r of rows) {
+      const tokens = r.tokens ?? 100
+      insert.run(r.key, r.ts ?? now - 60_000, r.agent ?? null, r.project ?? null, r.parent ?? null, tokens / 2, tokens / 2, tokens, r.cost === undefined ? 0.01 : r.cost)
+    }
+    db.close()
+  }
+
+  function reportFor(dbPath: string, period: Parameters<typeof computeReport>[1]): UsageReport {
+    const db = UsageDatabase.open(dbPath, { readOnly: true })
+    try {
+      return computeReport(db, period, {}, { pricing: new HybridPricingProvider(db), now })
+    } finally {
+      db.close()
+    }
+  }
+
+  it("groups by agent and folds null agent into 'main', consistent with counts.mainAgentRequests", () => {
+    const dir = tmpDir()
+    try {
+      const dbPath = path.join(dir, "usage.db")
+      seed(dbPath, [
+        { key: "a1", agent: "build", project: "proj_a", tokens: 200, cost: 0.04 },
+        { key: "a2", agent: null, project: null, tokens: 100, cost: 0.02 },
+        { key: "a3", agent: "explore", project: "proj_b", parent: "ses_grp", tokens: 50, cost: null },
+      ])
+      const report = reportFor(dbPath, { kind: "all" })
+      // null agent counts as main in counts — perAgent uses the same convention
+      assert.equal(report.counts.mainAgentRequests, 2)
+      assert.deepEqual(
+        report.perAgent.map((row) => [row.agent, row.requests, row.totalTokens, row.cost]),
+        [
+          ["build", 1, 200, 0.04],
+          ["main", 1, 100, 0.02],
+          ["explore", 1, 50, null],
+        ],
+      )
+    } finally {
+      rmrf(dir)
+    }
+  })
+
+  it("groups by project and labels null project_id '(no project)'", () => {
+    const dir = tmpDir()
+    try {
+      const dbPath = path.join(dir, "usage.db")
+      seed(dbPath, [
+        { key: "p1", project: "proj_big", agent: "build", tokens: 800, cost: 0.01 },
+        { key: "p2", project: "proj_small", agent: "build", tokens: 10, cost: 0.09 },
+        { key: "p3", project: null, agent: "build", tokens: 5, cost: 0.001 },
+        { key: "p4", project: null, agent: "explore", parent: "ses_grp", tokens: 7, cost: null },
+      ])
+      const report = reportFor(dbPath, { kind: "all" })
+      // '(no project)' merges p3+p4; cost sums only known-cost events
+      assert.deepEqual(
+        report.perProject.map((row) => [row.project, row.requests, row.totalTokens, row.cost]),
+        [
+          ["proj_small", 1, 10, 0.09],
+          ["proj_big", 1, 800, 0.01],
+          ["(no project)", 2, 12, 0.001],
+        ],
+      )
+      // input/output split is preserved alongside the totals
+      assert.deepEqual(report.perProject[2]!.inputTokens + report.perProject[2]!.outputTokens, 12)
+    } finally {
+      rmrf(dir)
+    }
+  })
+
+  it("sorts cost desc then totalTokens desc, unknown cost last", () => {
+    const dir = tmpDir()
+    try {
+      const dbPath = path.join(dir, "usage.db")
+      seed(dbPath, [
+        { key: "s1", agent: "spendy", tokens: 150, cost: 0.03 },
+        { key: "s2", agent: "spendy", tokens: 150, cost: 0.03 },
+        { key: "c1", agent: "cheap", tokens: 450, cost: 0.01 },
+        { key: "c2", agent: "cheap", tokens: 450, cost: 0.005 },
+        { key: "f1", agent: "free", tokens: 5000, cost: null },
+        { key: "t1", agent: "tie-a", tokens: 100, cost: 0.02 },
+        { key: "t2", agent: "tie-b", tokens: 400, cost: 0.02 },
+      ])
+      const report = reportFor(dbPath, { kind: "all" })
+      assert.deepEqual(
+        report.perAgent.map((row) => row.agent),
+        ["spendy", "tie-b", "tie-a", "cheap", "free"],
+      )
+      // multi-event groups aggregate requests/tokens/cost
+      const spendy = report.perAgent[0]!
+      assert.equal(spendy.requests, 2)
+      assert.equal(spendy.totalTokens, 300)
+      assert.ok(Math.abs(spendy.cost! - 0.06) < 1e-12)
+      // same rules govern the project ordering (all events share one project here)
+      assert.deepEqual(
+        report.perProject.map((row) => row.project),
+        ["(no project)"],
+      )
+      assert.equal(report.perProject[0]!.requests, 7)
+    } finally {
+      rmrf(dir)
+    }
+  })
+
+  it("empty period yields empty perAgent/perProject arrays", () => {
+    const dir = tmpDir()
+    try {
+      const dbPath = path.join(dir, "usage.db")
+      seed(dbPath, [{ key: "old", agent: "build", project: "proj_old", tokens: 10, ts: now - 40 * 24 * 3600_000 }])
+      const report = reportFor(dbPath, { kind: "today" })
+      assert.deepEqual(report.perAgent, [])
+      assert.deepEqual(report.perProject, [])
+      assert.equal(report.counts.modelRequests, 0)
+      rmrf(path.dirname(dbPath))
+    } finally {
+      rmrf(dir)
+    }
+  })
+})
+
 describe("buildComparison", () => {
   // Fixed clock: Wed Jul 15 2026, 12:00 local. Windows are fully deterministic:
   //   month: current [Jun 15 12:00, open), previous [May 16 12:00, Jun 15 12:00)

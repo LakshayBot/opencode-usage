@@ -21,15 +21,19 @@ import { formatNumber } from "./usage-format.ts"
 import { UsageEmptyView, UsageErrorView } from "./usage-view.tsx"
 import {
   buildComparisonModel,
+  buildUsageAgents,
   buildUsageModels,
   buildUsageOverview,
   buildUsagePeriodSummaries,
+  buildUsageProjects,
   buildUsageProviders,
   type UsageModelRowModel,
   type UsageTimelineMetric,
 } from "./usage-view-model.ts"
+import { UsageAgentsDialog } from "./usage-agents.tsx"
 import { UsageGraphView } from "./usage-graph.tsx"
 import { UsageOverviewView, type OverviewAction } from "./usage-overview.tsx"
+import { UsageProjectsDialog } from "./usage-projects.tsx"
 import {
   UsageHistoryDialog,
   UsageModelDetailView,
@@ -57,6 +61,16 @@ export function showModels(api: TuiPluginApi, period: ReportPeriod): void {
 export function showProviders(api: TuiPluginApi, period: ReportPeriod): void {
   api.ui.dialog.setSize("large")
   api.ui.dialog.replace(() => renderProviders(api, period), undefined)
+}
+
+export function showAgents(api: TuiPluginApi, period: ReportPeriod): void {
+  api.ui.dialog.setSize("large")
+  api.ui.dialog.replace(() => renderAgents(api, period), undefined)
+}
+
+export function showProjects(api: TuiPluginApi, period: ReportPeriod): void {
+  api.ui.dialog.setSize("large")
+  api.ui.dialog.replace(() => renderProjects(api, period), undefined)
 }
 
 export function showGraph(api: TuiPluginApi, period: ReportPeriod, metric: UsageTimelineMetric = "tokens"): void {
@@ -134,6 +148,20 @@ function buildActions(api: TuiPluginApi, period: ReportPeriod, report: UsageRepo
       run: () => showProviders(api, period),
     })
   }
+  if (report.perAgent.length > 0) {
+    actions.push({
+      title: "By agent",
+      description: `${formatNumber(report.perAgent.length)} agent${report.perAgent.length === 1 ? "" : "s"}`,
+      run: () => showAgents(api, period),
+    })
+  }
+  if (report.perProject.length > 0) {
+    actions.push({
+      title: "By project",
+      description: `${formatNumber(report.perProject.length)} project${report.perProject.length === 1 ? "" : "s"}`,
+      run: () => showProjects(api, period),
+    })
+  }
   actions.push({
     title: "Graph",
     description: "Tokens over time",
@@ -161,6 +189,22 @@ function renderProviders(api: TuiPluginApi, period: ReportPeriod): JSX.Element {
   const rows = buildUsageProviders(result.report)
   if (rows.length === 0) return <UsageEmptyView api={api} periodLabel={result.report.periodLabel} />
   return <UsageProvidersDialog api={api} rows={rows} />
+}
+
+function renderAgents(api: TuiPluginApi, period: ReportPeriod): JSX.Element {
+  const result = computeReportSafely(period)
+  if (result.kind === "error") return <UsageErrorView api={api} error={result.error} />
+  const rows = buildUsageAgents(result.report)
+  if (rows.length === 0) return <UsageEmptyView api={api} periodLabel={result.report.periodLabel} />
+  return <UsageAgentsDialog api={api} rows={rows} onBack={() => showOverview(api, period)} />
+}
+
+function renderProjects(api: TuiPluginApi, period: ReportPeriod): JSX.Element {
+  const result = computeReportSafely(period)
+  if (result.kind === "error") return <UsageErrorView api={api} error={result.error} />
+  const rows = buildUsageProjects(result.report)
+  if (rows.length === 0) return <UsageEmptyView api={api} periodLabel={result.report.periodLabel} />
+  return <UsageProjectsDialog api={api} rows={rows} onBack={() => showOverview(api, period)} />
 }
 
 function renderGraph(api: TuiPluginApi, period: ReportPeriod, metric: UsageTimelineMetric): JSX.Element {

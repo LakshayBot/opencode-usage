@@ -2,9 +2,11 @@ import { describe, it } from "node:test"
 import assert from "node:assert/strict"
 import {
   buildComparisonModel,
+  buildUsageAgents,
   buildUsageModels,
   buildUsageOverview,
   buildUsagePeriodSummaries,
+  buildUsageProjects,
   buildUsageProviders,
 } from "../src/ui/usage/usage-view-model.ts"
 import type { PeriodComparison } from "../src/reporting/usage-report.ts"
@@ -33,6 +35,8 @@ function makeReport(overrides: Partial<UsageReport> = {}): UsageReport {
     },
     perModel: [],
     perProvider: [],
+    perAgent: [],
+    perProject: [],
     averages: { inputTokensPerUserMessage: null, outputTokensPerAssistantResponse: null },
     topModels: { mostUsed: null, mostExpensive: null },
     largestRequest: null,
@@ -108,6 +112,36 @@ describe("buildUsageModels / buildUsageProviders", () => {
     const providers = buildUsageProviders(report)
     assert.equal(providers[0]!.provider, "anthropic")
     assert.equal(providers[0]!.totalTokens, 17100)
+  })
+})
+
+describe("buildUsageAgents / buildUsageProjects", () => {
+  it("maps per-agent rows through unchanged", () => {
+    const report = makeReport({
+      perAgent: [
+        { agent: "build", requests: 3, totalTokens: 17100, inputTokens: 3000, outputTokens: 800, cost: 0.03 },
+        { agent: "explore", requests: 1, totalTokens: 900, inputTokens: 800, outputTokens: 100, cost: null },
+      ],
+    })
+    const agents = buildUsageAgents(report)
+    assert.deepEqual(agents, [
+      { agent: "build", requests: 3, totalTokens: 17100, inputTokens: 3000, outputTokens: 800, cost: 0.03 },
+      { agent: "explore", requests: 1, totalTokens: 900, inputTokens: 800, outputTokens: 100, cost: null },
+    ])
+  })
+
+  it("maps per-project rows through unchanged", () => {
+    const report = makeReport({
+      perProject: [{ project: "(no project)", requests: 2, totalTokens: 1200, inputTokens: 1100, outputTokens: 100, cost: 0.01 }],
+    })
+    assert.deepEqual(buildUsageProjects(report), [
+      { project: "(no project)", requests: 2, totalTokens: 1200, inputTokens: 1100, outputTokens: 100, cost: 0.01 },
+    ])
+  })
+
+  it("empty grouping arrays map to empty view models", () => {
+    assert.deepEqual(buildUsageAgents(makeReport()), [])
+    assert.deepEqual(buildUsageProjects(makeReport()), [])
   })
 })
 
