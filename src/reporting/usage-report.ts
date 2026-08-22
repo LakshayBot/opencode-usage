@@ -12,6 +12,14 @@
  *  - Only events from providers known to report cache tokens contribute to
  *    hit-rate/savings. If no such events exist in the period, the report
  *    says "Cache data: Not available" — missing data is never treated as zero.
+ *
+ * Timeline model (`computeUsageTimeline`):
+ *  - Time-bucketed usage for the TUI "Graph" view (tokens over time). Buckets
+ *    always span the whole period — empty ones included — so bars align to
+ *    real time instead of clumping onto busy days/hours.
+ *  - Per-bucket cost follows the breakdown convention: recomputed from stored
+ *    tokens with current pricing, NULL when any contributing event's model has
+ *    no pricing (never invented, never silently zero).
  */
 
 import type { PricingProvider } from "../types/pricing.ts"
@@ -102,32 +110,224 @@ export function periodLabel(period: ReportPeriod): string {
   }
 }
 
-export function computeReport(db: UsageDatabase, period: ReportPeriod, filter: ReportFilter = {}, options: ReportOptions): UsageReport {
-  const now = options.now ?? Date.now()
-  const { start, end } = periodRange(period, now)
-  const where: string[] = []
+/** Shared WHERE builder for event queries (clauses use the `e.` alias). */
+function buildPeriodClauses(
+  period: ReportPeriod,
+  filter: ReportFilter,
+  start: number | null,
+  end: number | null,
+): { clauses: string[]; params: Array<string | number | null> } {
+  const clauses: string[] = []
   const params: Array<string | number | null> = []
   if (period.kind === "session") {
-    where.push("e.session_id = ?")
+    clauses.push("e.session_id = ?")
     params.push(period.sessionId)
   }
   if (start !== null) {
-    where.push("e.timestamp >= ?")
+    clauses.push("e.timestamp >= ?")
     params.push(start)
   }
   if (end !== null) {
-    where.push("e.timestamp <= ?")
+    clauses.push("e.timestamp <= ?")
     params.push(end)
   }
   if (filter.provider) {
-    where.push("e.provider LIKE ?")
+    clauses.push("e.provider LIKE ?")
     params.push(`%${filter.provider}%`)
   }
   if (filter.model) {
-    where.push("e.model LIKE ?")
+    clauses.push("e.model LIKE ?")
     params.push(`%${filter.model}%`)
   }
-  const whereSql = where.length ? `WHERE ${where.join(" AND ")}` : ""
+  return { clauses, params }
+}
+
+// ---- usage timeline ---------------------------------------------------------
+//
+// Time-bucketed token usage for the TUI "Graph" view ('session'/'today' bucket
+// hourly, 'week'/'month'/'all' daily; 'all' caps to the most recent 30 daily
+// buckets). Buckets are chronological and include empty ones spanning the
+// whole period so bars align to real time.
+
+export type TimelineGranularity = "hourly" | "daily"
+
+export interface TimelineBucket {
+  /** Human label: 'Mon 18' for daily buckets, '14:00' for hourly ones (local time). */
+  label: string
+  start: number
+  end: number
+  inputTokens: number
+  outputTokens: number
+  totalTokens: number
+  cost: number | null
+}
+
+/** 'session'/'today' bucket by hour; longer periods by day. */
+export function timelineGranularity(period: ReportPeriod): TimelineGranularity {
+  return period.kind === "session" || period.kind === "today" ? "hourly" : "daily"
+}
+
+const HOUR_MS = 3600_000
+const DAY_MS = 24 * HOUR_MS
+/** Cap for the unbounded 'all' period: the 30 most recent daily buckets. */
+const MAX_TIMELINE_BUCKETS = 30
+
+const WEEKDAY_SHORT = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"] as const
+
+function dayFloor(ms: number): number {
+  const d = new Date(ms)
+  return new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime()
+}
+
+function hourFloor(ms: number): number {
+  const d = new Date(ms)
+  return new Date(d.getFullYear(), d.getMonth(), d.getDate(), d.getHours()).getTime()
+}
+
+/** Calendar-aware day/hour addition — stays aligned across DST shifts. */
+function plusDays(dayStartMs: number, days: number): number {
+  const d = new Date(dayStartMs)
+  return new Date(d.getFullYear(), d.getMonth(), d.getDate() + days).getTime()
+}
+
+function plusHours(hourStartMs: number, hours: number): number {
+  const d = new Date(hourStartMs)
+  return new Date(d.getFullYear(), d.getMonth(), d.getDate(), d.getHours() + hours).getTime()
+}
+
+function dayBucketLabel(startMs: number): string {
+  const d = new Date(startMs)
+  return `${WEEKDAY_SHORT[d.getDay()] ?? "?"} ${d.getDate()}`
+}
+
+function hourBucketLabel(startMs: number): string {
+  const d = new Date(startMs)
+  return `${String(d.getHours()).padStart(2, "0")}:00`
+}
+
+/**
+ * Compute the tokens-over-time buckets for a period. Mirrors computeReport's
+ * event selection exactly (same WHERE logic), then aggregates rows into fixed
+ * real-time buckets. Cost per bucket follows the breakdown convention above:
+ * recomputed with current pricing, null when ANY contributing event's model
+ * has no pricing.
+ */
+export function computeUsageTimeline(db: UsageDatabase, period: ReportPeriod, filter: ReportFilter = {}, options: ReportOptions): TimelineBucket[] {
+  const now = options.now ?? Date.now()
+  const granularity = timelineGranularity(period)
+  const advance = granularity === "hourly" ? plusHours : plusDays
+
+  // ---- events (same selection as computeReport, oldest first) --------------
+  const { start, end } = periodRange(period, now)
+  const { clauses, params } = buildPeriodClauses(period, filter, start, end)
+  const whereSql = clauses.length ? `WHERE ${clauses.join(" AND ")}` : ""
+  const eventRows = db.raw
+    .prepare(
+      `SELECT e.provider, e.model, e.agent, e.parent_session_id,
+              e.input_tokens, e.output_tokens, e.reasoning_tokens,
+              e.cache_read_tokens, e.cache_write_tokens, e.total_tokens,
+              e.cost, e.provider_reported_cache, e.timestamp
+       FROM usage_events e
+       ${whereSql}
+       ORDER BY e.timestamp ASC`,
+    )
+    .all(...params) as unknown as EventRow[]
+  const firstEvent = eventRows[0]
+  const lastEvent = eventRows[eventRows.length - 1]
+
+  // ---- axis bounds (bucket-aligned; end exclusive) --------------------------
+  // Bounded periods end at the bucket containing `now`; unbounded ones span
+  // from the first to the last event. No events -> no meaningful axis.
+  let axisStart: number
+  switch (period.kind) {
+    case "today":
+      axisStart = dayFloor(now)
+      break
+    case "week":
+      axisStart = dayFloor(now - 7 * DAY_MS)
+      break
+    case "month":
+      axisStart = dayFloor(now - 30 * DAY_MS)
+      break
+    case "session":
+    case "all":
+      if (!firstEvent || !lastEvent) return []
+      axisStart = granularity === "hourly" ? hourFloor(firstEvent.timestamp) : dayFloor(firstEvent.timestamp)
+      break
+  }
+  let axisEnd: number
+  switch (period.kind) {
+    case "today":
+      axisEnd = hourFloor(now) + HOUR_MS
+      break
+    case "week":
+    case "month":
+      axisEnd = plusDays(dayFloor(now), 1)
+      break
+    case "session":
+      axisEnd = hourFloor(lastEvent!.timestamp) + HOUR_MS
+      break
+    case "all":
+      axisEnd = plusDays(dayFloor(Math.max(lastEvent!.timestamp, now)), 1)
+      break
+  }
+  if (axisEnd <= axisStart) return []
+
+  // ---- buckets (empty ones included) ----------------------------------------
+  let buckets: TimelineBucket[] = []
+  for (let cursor = axisStart; cursor < axisEnd; ) {
+    const next = advance(cursor, 1)
+    buckets.push({
+      label: granularity === "hourly" ? hourBucketLabel(cursor) : dayBucketLabel(cursor),
+      start: cursor,
+      end: next,
+      inputTokens: 0,
+      outputTokens: 0,
+      totalTokens: 0,
+      cost: 0,
+    })
+    cursor = next
+  }
+  // 'all' keeps only the most recent window; older events fall outside it.
+  if (period.kind === "all" && buckets.length > MAX_TIMELINE_BUCKETS) {
+    buckets = buckets.slice(buckets.length - MAX_TIMELINE_BUCKETS)
+  }
+
+  // ---- aggregate ------------------------------------------------------------
+  // Rows arrive sorted, so a moving index places every event without scanning.
+  let index = 0
+  for (const row of eventRows) {
+    while (index < buckets.length - 1 && row.timestamp >= buckets[index]!.end) index++
+    const bucket = buckets[index]
+    if (!bucket || row.timestamp < bucket.start || row.timestamp >= bucket.end) continue
+    bucket.inputTokens += row.input_tokens
+    bucket.outputTokens += row.output_tokens
+    bucket.totalTokens += row.total_tokens
+    const pricing = options.pricing.getPricing(row.provider ?? "unknown", row.model ?? "unknown", row.timestamp)
+    const calc = CostCalculator.compute(
+      {
+        inputTokens: row.input_tokens,
+        outputTokens: row.output_tokens + row.reasoning_tokens,
+        cacheReadTokens: row.cache_read_tokens,
+        cacheWriteTokens: row.cache_write_tokens,
+      },
+      pricing,
+    )
+    if (calc.unknown || calc.total === null) {
+      bucket.cost = null
+    } else if (bucket.cost !== null) {
+      bucket.cost += calc.total
+    }
+  }
+
+  return buckets
+}
+
+export function computeReport(db: UsageDatabase, period: ReportPeriod, filter: ReportFilter = {}, options: ReportOptions): UsageReport {
+  const now = options.now ?? Date.now()
+  const { start, end } = periodRange(period, now)
+  const { clauses, params } = buildPeriodClauses(period, filter, start, end)
+  const whereSql = clauses.length ? `WHERE ${clauses.join(" AND ")}` : ""
   const whereParams = [...params]
 
   // ---- usage events -------------------------------------------------------
@@ -201,7 +401,7 @@ export function computeReport(db: UsageDatabase, period: ReportPeriod, filter: R
   }
 
   // ---- message / session counts -------------------------------------------
-  const countSql = `SELECT COUNT(*) AS n FROM messages m WHERE 1=1 ${where.length ? `AND ${where.map((w) => w.replaceAll("e.", "m.")).join(" AND ")}` : ""}`
+  const countSql = `SELECT COUNT(*) AS n FROM messages m WHERE 1=1 ${clauses.length ? `AND ${clauses.map((w) => w.replaceAll("e.", "m.")).join(" AND ")}` : ""}`
   const userMessages = (db.raw.prepare(`${countSql} AND m.role = 'user'`).get(...whereParams) as { n: number }).n
   const assistantMessages = (db.raw.prepare(`${countSql} AND m.role = 'assistant'`).get(...whereParams) as { n: number }).n
 
