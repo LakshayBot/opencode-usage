@@ -19,7 +19,7 @@ import type { TuiPluginApi } from "@opencode-ai/plugin/tui"
 import type { ReportPeriod } from "../../types/usage.ts"
 import { formatCost, formatNumber, formatPercent, formatTokens } from "./usage-format.ts"
 import { Divider, MetricRow, UsageHeader } from "./usage-view.tsx"
-import type { UsageOverviewModel } from "./usage-view-model.ts"
+import type { UsageComparisonModel, UsageOverviewModel } from "./usage-view-model.ts"
 
 const PERIOD_LABELS: Partial<Record<ReportPeriod["kind"], string>> = {
   session: "Session",
@@ -56,6 +56,8 @@ export function UsageOverviewView(props: {
   tabs?: ReportPeriod[]
   activePeriod?: ReportPeriod
   onSelectPeriod?: (period: ReportPeriod) => void
+  /** "vs prev" deltas under the tabs; hidden entirely when not available. */
+  comparison?: UsageComparisonModel
 }): JSX.Element {
   const t = props.api.theme.current
   const count = () => props.actions.length
@@ -188,6 +190,14 @@ export function UsageOverviewView(props: {
               )
             }}
           </For>
+        </box>
+      </Show>
+
+      <Show when={props.comparison?.available}>
+        <box paddingLeft={4} paddingRight={4}>
+          <text fg={t.textMuted} wrapMode="none">
+            {props.comparison!.text}
+          </text>
         </box>
       </Show>
 

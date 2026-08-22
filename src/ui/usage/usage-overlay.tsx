@@ -14,12 +14,13 @@ import type { JSX } from "solid-js"
 import type { TuiPluginApi } from "@opencode-ai/plugin/tui"
 import { resolvePaths } from "../../opencode/paths.ts"
 import { HybridPricingProvider } from "../../pricing/modelsdev.ts"
-import { computeReport, computeUsageTimeline, periodLabel, type TimelineBucket } from "../../reporting/usage-report.ts"
+import { buildComparison, computeReport, computeUsageTimeline, periodLabel, type PeriodComparison, type TimelineBucket } from "../../reporting/usage-report.ts"
 import { UsageDatabase } from "../../storage/database.ts"
 import type { ReportFilter, ReportPeriod, UsageReport } from "../../types/usage.ts"
 import { formatNumber } from "./usage-format.ts"
 import { UsageEmptyView, UsageErrorView } from "./usage-view.tsx"
 import {
+  buildComparisonModel,
   buildUsageModels,
   buildUsageOverview,
   buildUsagePeriodSummaries,
@@ -36,7 +37,7 @@ import {
   UsageProvidersDialog,
 } from "./usage-views.tsx"
 
-type ReportResult = { kind: "ok"; report: UsageReport } | { kind: "error"; error: string }
+type ReportResult = { kind: "ok"; report: UsageReport; comparison: PeriodComparison } | { kind: "error"; error: string }
 
 /** Open /usage for the given period. */
 export function openUsage(api: TuiPluginApi, period: ReportPeriod): void {
@@ -106,6 +107,7 @@ function renderOverview(api: TuiPluginApi, period: ReportPeriod, selectedIndex =
     <UsageOverviewView
       api={api}
       overview={overview}
+      comparison={buildComparisonModel(result.comparison)}
       actions={actions}
       tabs={buildPeriodTabs(api)}
       activePeriod={period}
@@ -249,8 +251,9 @@ export function computeTimelineSafely(
 }
 
 /**
- * Compute a report for the route/period. NEVER throws: every failure returns
- * an error payload that renders as a visible in-popup message.
+ * Compute a report (+ period comparison) for the route/period. NEVER throws:
+ * every failure returns an error payload that renders as a visible in-popup
+ * message.
  */
 export function computeReportSafely(
   period: ReportPeriod,
@@ -261,7 +264,11 @@ export function computeReportSafely(
     const paths = resolvePaths()
     db = UsageDatabase.open(paths.usageDbPath, { readOnly: true })
     const pricing = new HybridPricingProvider(db)
-    return { kind: "ok", report: computeReport(db, period, filter, { pricing }) }
+    return {
+      kind: "ok",
+      report: computeReport(db, period, filter, { pricing }),
+      comparison: buildComparison(db, period, filter, { pricing }),
+    }
   } catch (error) {
     return { kind: "error", error: String(error) }
   } finally {

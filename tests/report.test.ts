@@ -3,7 +3,7 @@ import assert from "node:assert/strict"
 import path from "node:path"
 import { tmpDir, rmrf, seedUsageEvents } from "./helpers.ts"
 import { UsageDatabase } from "../src/storage/database.ts"
-import { computeReport, periodRange, periodLabel } from "../src/reporting/usage-report.ts"
+import { buildComparison, computeReport, periodRange, periodLabel, type PeriodComparison } from "../src/reporting/usage-report.ts"
 import { HybridPricingProvider } from "../src/pricing/modelsdev.ts"
 import { renderReportMarkdown, formatTokens, formatCost } from "../src/reporting/formatters/markdown.ts"
 import type { UsageReport } from "../src/types/usage.ts"
@@ -164,6 +164,182 @@ describe("computeReport", () => {
     assert.equal(byModel.perModel[0]!.provider, "openai")
     db.close()
     rmrf(path.dirname(dbPath))
+  })
+})
+
+describe("buildComparison", () => {
+  // Fixed clock: Wed Jul 15 2026, 12:00 local. Windows are fully deterministic:
+  //   month: current [Jun 15 12:00, open), previous [May 16 12:00, Jun 15 12:00)
+  //   week:  current [Jul 08 12:00, open), previous [Jul 01 12:00, Jul 08 12:00)
+  //   today: current [Jul 15 00:00, open), previous [Jul 14 12:00, Jul 15 00:00)
+  const NOW = new Date(2026, 6, 15, 12, 0, 0, 0).getTime()
+  const DAY_MS = 24 * 3600_000
+
+  function seed(dbPath: string, events: Array<{ key: string; ts: number; tokens?: number; cost?: number | null }>): void {
+    const db = UsageDatabase.open(dbPath)
+    const insert = db.raw.prepare(
+      `INSERT INTO usage_events (
+         event_key, timestamp, session_id, provider, model,
+         input_tokens, output_tokens, cache_read_tokens, cache_write_tokens,
+         total_tokens, cost, provider_reported_cache
+       ) VALUES (?, ?, 'ses_cmp', 'anthropic', 'claude-sonnet-4-6', ?, 0, 0, 0, ?, ?, 0)`,
+    )
+    for (const e of events) {
+      const tokens = e.tokens ?? 100
+      insert.run(e.key, e.ts, tokens / 2, tokens, e.cost === undefined ? 0.01 : e.cost)
+    }
+    db.close()
+  }
+
+  function comparisonFor(dbPath: string, period: Parameters<typeof buildComparison>[1]): PeriodComparison {
+    const db = UsageDatabase.open(dbPath, { readOnly: true })
+    try {
+      return buildComparison(db, period, {}, { pricing: new HybridPricingProvider(db), now: NOW })
+    } finally {
+      db.close()
+    }
+  }
+
+  it("splits month windows at the exact boundary across a calendar-month edge", () => {
+    const dir = tmpDir()
+    try {
+      const dbPath = path.join(dir, "usage.db")
+      seed(dbPath, [
+        { key: "p1-prev-start-edge", ts: NOW - 60 * DAY_MS }, // exactly May 16 12:00 -> previous only
+        { key: "p2-jun1", ts: new Date(2026, 5, 1, 9, 0).getTime() },
+        { key: "p3-jun10", ts: new Date(2026, 5, 10, 10, 30).getTime() },
+        { key: "p4-before-boundary", ts: NOW - 30 * DAY_MS - 3600_000 }, // Jun 15 11:00 -> previous
+        { key: "b-boundary", ts: NOW - 30 * DAY_MS }, // exactly Jun 15 12:00 -> CURRENT only, never previous
+        { key: "c-jul1", ts: new Date(2026, 6, 1, 8, 0).getTime() },
+        { key: "c-now", ts: NOW },
+      ])
+      // default tokens=100/cost=0.01 each: current 3x100, previous 4x100
+      const cmp = comparisonFor(dbPath, { kind: "month" })
+      assert.equal(cmp.available, true)
+      assert.equal(cmp.label, "Last 30 Days")
+      assert.deepEqual(cmp.current, { requests: 3, totalTokens: 300, cost: 0.03 })
+      assert.deepEqual(cmp.previous, { requests: 4, totalTokens: 400, cost: 0.04 })
+      assert.equal(cmp.delta.requestsPct, -25)
+      assert.equal(cmp.delta.totalTokensPct, -25)
+      assert.equal(cmp.delta.costPct, -25)
+    } finally {
+      rmrf(dir)
+    }
+  })
+
+  it("week compares the identical 7-day window immediately before", () => {
+    const dir = tmpDir()
+    try {
+      const dbPath = path.join(dir, "usage.db")
+      seed(dbPath, [
+        // inside the previous week window [Jul 01 12:00, Jul 08 12:00)
+        { key: "prev-week", ts: new Date(2026, 6, 3, 9, 0).getTime(), tokens: 500, cost: 0.05 },
+        // Jul 01 08:00 is BEFORE the previous window starts -> in neither week window
+        { key: "before-prev-week", ts: new Date(2026, 6, 1, 8, 0).getTime() },
+        // current week
+        { key: "cur-week", ts: NOW - 2 * DAY_MS, tokens: 250, cost: 0.02 },
+        { key: "cur-now", ts: NOW },
+      ])
+      const cmp = comparisonFor(dbPath, { kind: "week" })
+      assert.equal(cmp.available, true)
+      assert.equal(cmp.label, "Last 7 Days")
+      assert.equal(cmp.current.requests, 2)
+      assert.equal(cmp.current.totalTokens, 350)
+      assert.equal(cmp.previous.requests, 1)
+      assert.equal(cmp.previous.totalTokens, 500)
+      assert.equal(cmp.delta.totalTokensPct, -30)
+    } finally {
+      rmrf(dir)
+    }
+  })
+
+  it("today compares the same elapsed length before midnight", () => {
+    const dir = tmpDir()
+    try {
+      const dbPath = path.join(dir, "usage.db")
+      seed(dbPath, [
+        // yesterday 18:00 is inside [Jul 14 12:00, Jul 15 00:00)
+        { key: "yesterday-evening", ts: new Date(2026, 6, 14, 18, 0).getTime(), tokens: 400, cost: 0.04 },
+        // yesterday morning falls outside that window
+        { key: "yesterday-morning", ts: new Date(2026, 6, 14, 8, 0).getTime() },
+        { key: "today-now", ts: NOW, tokens: 100, cost: 0.01 },
+      ])
+      const cmp = comparisonFor(dbPath, { kind: "today" })
+      assert.equal(cmp.available, true)
+      assert.deepEqual(cmp.current, { requests: 1, totalTokens: 100, cost: 0.01 })
+      assert.deepEqual(cmp.previous, { requests: 1, totalTokens: 400, cost: 0.04 })
+      assert.equal(cmp.delta.requestsPct, 0)
+      assert.equal(cmp.delta.totalTokensPct, -75)
+      assert.equal(cmp.delta.costPct, -75)
+    } finally {
+      rmrf(dir)
+    }
+  })
+
+  it("is unavailable with zeroed fields for session and all periods", () => {
+    const dir = tmpDir()
+    try {
+      const dbPath = path.join(dir, "usage.db")
+      seed(dbPath, [{ key: "e1", ts: NOW }])
+      for (const period of [{ kind: "session", sessionId: "ses_cmp" }, { kind: "all" }] as const) {
+        const cmp = comparisonFor(dbPath, period)
+        assert.equal(cmp.available, false)
+        assert.deepEqual(cmp.current, { requests: 0, totalTokens: 0, cost: 0 })
+        assert.deepEqual(cmp.previous, { requests: 0, totalTokens: 0, cost: 0 })
+        assert.deepEqual(cmp.delta, { requestsPct: null, totalTokensPct: null, costPct: null })
+      }
+    } finally {
+      rmrf(dir)
+    }
+  })
+
+  it("delta null rules: both empty, brand-new usage, and decline-to-zero", () => {
+    const dir = tmpDir()
+    try {
+      const dbPath = path.join(dir, "usage.db")
+      // no events at all -> both windows empty -> every pct null
+      seed(dbPath, [])
+      const empty = comparisonFor(dbPath, { kind: "today" })
+      assert.equal(empty.available, true)
+      assert.deepEqual(empty.delta, { requestsPct: null, totalTokensPct: null, costPct: null })
+
+      // events only in the current window -> prev == 0 && cur > 0 -> still null ('new' in UI)
+      seed(dbPath, [{ key: "only-now", ts: NOW, tokens: 300, cost: 0.03 }])
+      const fresh = comparisonFor(dbPath, { kind: "today" })
+      assert.equal(fresh.delta.requestsPct, null)
+      assert.equal(fresh.delta.totalTokensPct, null)
+
+      // events only in the previous window -> decline to zero is a real number (-100)
+      const older = path.join(dir, "older.db")
+      seed(older, [{ key: "only-prev", ts: NOW - 60 * DAY_MS, tokens: 300 }])
+      const declined = comparisonFor(older, { kind: "month" })
+      assert.equal(declined.current.requests, 0)
+      assert.equal(declined.delta.requestsPct, -100)
+      assert.equal(declined.delta.totalTokensPct, -100)
+    } finally {
+      rmrf(dir)
+    }
+  })
+
+  it("rounds pcts to integers and nulls cost when either side has unknown costs", () => {
+    const dir = tmpDir()
+    try {
+      const dbPath = path.join(dir, "usage.db")
+      seed(dbPath, [
+        { key: "prev", ts: NOW - 60 * DAY_MS + 3600_000, tokens: 300, cost: 0.02 },
+        { key: "cur-rounding", ts: NOW - 29 * DAY_MS, tokens: 400, cost: null },
+      ])
+      const cmp = comparisonFor(dbPath, { kind: "month" })
+      // (400-300)/300*100 = 33.33 -> 33
+      assert.equal(cmp.delta.totalTokensPct, 33)
+      assert.equal(cmp.delta.requestsPct, 0)
+      // any unknown-cost event makes its whole window's cost unknown -> not comparable
+      assert.equal(cmp.current.cost, null)
+      assert.equal(cmp.previous.cost, 0.02)
+      assert.equal(cmp.delta.costPct, null)
+    } finally {
+      rmrf(dir)
+    }
   })
 })
 

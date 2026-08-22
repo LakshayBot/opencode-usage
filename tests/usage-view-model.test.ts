@@ -1,11 +1,13 @@
 import { describe, it } from "node:test"
 import assert from "node:assert/strict"
 import {
+  buildComparisonModel,
   buildUsageModels,
   buildUsageOverview,
   buildUsagePeriodSummaries,
   buildUsageProviders,
 } from "../src/ui/usage/usage-view-model.ts"
+import type { PeriodComparison } from "../src/reporting/usage-report.ts"
 import type { UsageReport } from "../src/types/usage.ts"
 
 function makeReport(overrides: Partial<UsageReport> = {}): UsageReport {
@@ -120,5 +122,70 @@ describe("buildUsagePeriodSummaries", () => {
     assert.equal(summaries[0]!.label, "Today")
     assert.equal(summaries[1]!.label, "All Time")
     assert.equal(summaries[1]!.cost, null)
+  })
+})
+
+describe("buildComparisonModel", () => {
+  function makeCmp(overrides: Partial<PeriodComparison> = {}): PeriodComparison {
+    return {
+      available: true,
+      label: "Last 7 Days",
+      current: { requests: 134, totalTokens: 1000, cost: 2 },
+      previous: { requests: 100, totalTokens: 750, cost: 3 },
+      delta: { requestsPct: 34, totalTokensPct: 33, costPct: -33 },
+      ...overrides,
+    }
+  }
+
+  it("renders up, down and composed line with the period label", () => {
+    const model = buildComparisonModel(makeCmp())
+    assert.equal(model.available, true)
+    assert.equal(model.requestsText, "+34%")
+    assert.equal(model.totalTokensText, "+33%")
+    assert.equal(model.costText, "-33%")
+    assert.equal(model.text, "vs prev Last 7 Days: req +34% · tok +33% · cost -33%")
+  })
+
+  it("renders em dash for null pcts (including unknown costs)", () => {
+    const model = buildComparisonModel(
+      makeCmp({
+        delta: { requestsPct: null, totalTokensPct: -12, costPct: null },
+        current: { requests: 0, totalTokens: 660, cost: null },
+      }),
+    )
+    assert.equal(model.requestsText, "—")
+    assert.equal(model.totalTokensText, "-12%")
+    assert.equal(model.costText, "—")
+    assert.equal(model.text, "vs prev Last 7 Days: req — · tok -12% · cost —")
+  })
+
+  it("renders 'new' when usage appears from a zero previous window", () => {
+    const model = buildComparisonModel(
+      makeCmp({
+        previous: { requests: 0, totalTokens: 0, cost: 0 },
+        delta: { requestsPct: null, totalTokensPct: null, costPct: null },
+      }),
+    )
+    assert.equal(model.requestsText, "new")
+    assert.equal(model.totalTokensText, "new")
+    // zero-to-zero is not 'new', just not comparable
+    const flat = buildComparisonModel(
+      makeCmp({ current: { requests: 0, totalTokens: 0, cost: 0 }, delta: { requestsPct: null, totalTokensPct: null, costPct: null } }),
+    )
+    assert.equal(flat.requestsText, "—")
+    // an unknown current cost is never comparable, so it stays '—', never 'new'
+    const unknownCost = buildComparisonModel(
+      makeCmp({ current: { requests: 5, totalTokens: 5, cost: null }, delta: { requestsPct: null, totalTokensPct: null, costPct: null } }),
+    )
+    assert.equal(unknownCost.costText, "—")
+  })
+
+  it("renders '+0%' for an unchanged metric and hides everything when unavailable", () => {
+    const unchanged = buildComparisonModel(makeCmp({ delta: { requestsPct: 0, totalTokensPct: 0, costPct: 0 } }))
+    assert.equal(unchanged.text, "vs prev Last 7 Days: req +0% · tok +0% · cost +0%")
+
+    const hidden = buildComparisonModel(makeCmp({ available: false }))
+    assert.equal(hidden.available, false)
+    assert.equal(hidden.text, "")
   })
 })

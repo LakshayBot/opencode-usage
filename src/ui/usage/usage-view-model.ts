@@ -7,7 +7,7 @@
  * popup can change freely without affecting tracking, tokens, cache or costs.
  */
 
-import type { TimelineBucket } from "../../reporting/usage-report.ts"
+import type { PeriodComparison, TimelineBucket } from "../../reporting/usage-report.ts"
 import type { ModelRow, ProviderRow, ReportPeriod, UsageReport } from "../../types/usage.ts"
 import { formatCost, formatTokens } from "./usage-format.ts"
 
@@ -184,4 +184,36 @@ function timelineBar(value: number, maxValue: number): string {
   if (value <= 0 || maxValue <= 0) return ""
   const width = Math.max(1, Math.round((value / maxValue) * TIMELINE_BAR_WIDTH))
   return BAR_CHARACTER.repeat(Math.min(TIMELINE_BAR_WIDTH, width))
+}
+
+// ---- period comparison ("vs prev" line on the overview) ----------------------
+
+export interface UsageComparisonModel {
+  /** False -> the overview hides the block entirely ('session'/'all'). */
+  available: boolean
+  /** Complete compact line, ready to render muted under the tabs. */
+  text: string
+  requestsText: string
+  totalTokensText: string
+  costText: string
+}
+
+/** '+34%' (up), '-12%' (down), 'new' (nothing before) or '—' (not comparable). */
+function comparisonMetricText(pct: number | null, previous: number | null, current: number | null): string {
+  if (pct !== null) return `${pct < 0 ? "-" : "+"}${Math.abs(pct)}%`
+  if (previous === 0 && (current ?? 0) > 0) return "new"
+  return "—"
+}
+
+export function buildComparisonModel(cmp: PeriodComparison): UsageComparisonModel {
+  const requestsText = comparisonMetricText(cmp.delta.requestsPct, cmp.previous.requests, cmp.current.requests)
+  const totalTokensText = comparisonMetricText(cmp.delta.totalTokensPct, cmp.previous.totalTokens, cmp.current.totalTokens)
+  const costText = comparisonMetricText(cmp.delta.costPct, cmp.previous.cost, cmp.current.cost)
+  return {
+    available: cmp.available,
+    text: cmp.available ? `vs prev ${cmp.label}: req ${requestsText} · tok ${totalTokensText} · cost ${costText}` : "",
+    requestsText,
+    totalTokensText,
+    costText,
+  }
 }

@@ -110,6 +110,108 @@ export function periodLabel(period: ReportPeriod): string {
   }
 }
 
+// ---- period comparison -------------------------------------------------------
+//
+// "vs prev" deltas for the overview: the current period window (identical
+// selection to computeReport) against the window of the same length ending
+// where the current one starts — e.g. 'week' compares [now-7d, now] with
+// [now-14d, now-7d). Windows are half-open on the shared edge: an event
+// stamped exactly at the boundary belongs to the CURRENT window only, so no
+// request is ever counted twice.
+
+export interface ComparisonTotals {
+  requests: number
+  totalTokens: number
+  /** Follows the cost.unknown convention: null when any event lacks a cost. */
+  cost: number | null
+}
+
+export interface PeriodComparison {
+  /** False when no preceding window exists ('session'/'all') — UI hides the block. */
+  available: boolean
+  /** Human label of the compared period (e.g. "Last 7 Days"). */
+  label: string
+  current: ComparisonTotals
+  previous: ComparisonTotals
+  delta: {
+    requestsPct: number | null
+    totalTokensPct: number | null
+    costPct: number | null
+  }
+}
+
+const zeroedTotals = (): ComparisonTotals => ({ requests: 0, totalTokens: 0, cost: 0 })
+
+/**
+ * Integer percent change, rounded; null whenever the previous side is zero —
+ * both-empty and brand-new-usage are reported as null and distinguished by the
+ * view model (— vs new).
+ */
+function pctDelta(current: number, previous: number): number | null {
+  if (previous === 0) return null
+  return Math.round(((current - previous) / previous) * 100)
+}
+
+/** Aggregate requests/tokens/cost over `[start, end)` (end omitted = open). */
+function aggregateWindow(db: UsageDatabase, filter: ReportFilter, start: number, end: number | null): ComparisonTotals {
+  const clauses = ["e.timestamp >= ?"]
+  const params: Array<string | number> = [start]
+  if (end !== null) {
+    clauses.push("e.timestamp < ?")
+    params.push(end)
+  }
+  if (filter.provider) {
+    clauses.push("e.provider LIKE ?")
+    params.push(`%${filter.provider}%`)
+  }
+  if (filter.model) {
+    clauses.push("e.model LIKE ?")
+    params.push(`%${filter.model}%`)
+  }
+  const row = db.raw
+    .prepare(
+      `SELECT COUNT(*) AS requests,
+              COALESCE(SUM(e.total_tokens), 0) AS totalTokens,
+              SUM(e.cost) AS costSum,
+              SUM(CASE WHEN e.cost IS NULL THEN 1 ELSE 0 END) AS costUnknowns
+       FROM usage_events e
+       WHERE ${clauses.join(" AND ")}`,
+    )
+    .get(...params) as { requests: number; totalTokens: number; costSum: number | null; costUnknowns: number | null }
+  const cost = (row.costUnknowns ?? 0) > 0 ? null : (row.costSum ?? 0)
+  return { requests: row.requests, totalTokens: row.totalTokens, cost }
+}
+
+export function buildComparison(db: UsageDatabase, period: ReportPeriod, filter: ReportFilter = {}, options: ReportOptions): PeriodComparison {
+  const label = periodLabel(period)
+  if (period.kind === "session" || period.kind === "all") {
+    return {
+      available: false,
+      label,
+      current: zeroedTotals(),
+      previous: zeroedTotals(),
+      delta: { requestsPct: null, totalTokensPct: null, costPct: null },
+    }
+  }
+  const now = options.now ?? Date.now()
+  // 'today'/'week'/'month' always have a concrete start from periodRange.
+  const curStart = periodRange(period, now).start!
+  const prevStart = curStart - (now - curStart)
+  const current = aggregateWindow(db, filter, curStart, null)
+  const previous = aggregateWindow(db, filter, prevStart, curStart)
+  return {
+    available: true,
+    label,
+    current,
+    previous,
+    delta: {
+      requestsPct: pctDelta(current.requests, previous.requests),
+      totalTokensPct: pctDelta(current.totalTokens, previous.totalTokens),
+      costPct: current.cost !== null && previous.cost !== null ? pctDelta(current.cost, previous.cost) : null,
+    },
+  }
+}
+
 /** Shared WHERE builder for event queries (clauses use the `e.` alias). */
 function buildPeriodClauses(
   period: ReportPeriod,
