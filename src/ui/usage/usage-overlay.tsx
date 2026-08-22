@@ -25,6 +25,7 @@ import {
   buildUsagePeriodSummaries,
   buildUsageProviders,
   type UsageModelRowModel,
+  type UsageTimelineMetric,
 } from "./usage-view-model.ts"
 import { UsageGraphView } from "./usage-graph.tsx"
 import { UsageOverviewView, type OverviewAction } from "./usage-overview.tsx"
@@ -57,9 +58,15 @@ export function showProviders(api: TuiPluginApi, period: ReportPeriod): void {
   api.ui.dialog.replace(() => renderProviders(api, period), undefined)
 }
 
-export function showGraph(api: TuiPluginApi, period: ReportPeriod): void {
+export function showGraph(api: TuiPluginApi, period: ReportPeriod, metric: UsageTimelineMetric = "tokens"): void {
   api.ui.dialog.setSize("large")
-  api.ui.dialog.replace(() => renderGraph(api, period), undefined)
+  // Metric state lives HERE, not inside the component: the host renderer does
+  // not reliably redraw plugin-rendered dialog content on reactive updates
+  // (same empirically-verified limitation as overview row highlights), so a
+  // signal flip alone repaints nothing. Re-calling dialog.replace forces the
+  // host to mount fresh content — the same workaround showOverview uses for
+  // navigation. The binding's run() re-invokes this with the flipped metric.
+  api.ui.dialog.replace(() => renderGraph(api, period, metric), undefined)
 }
 
 export function showHistory(api: TuiPluginApi, period: ReportPeriod): void {
@@ -154,7 +161,7 @@ function renderProviders(api: TuiPluginApi, period: ReportPeriod): JSX.Element {
   return <UsageProvidersDialog api={api} rows={rows} />
 }
 
-function renderGraph(api: TuiPluginApi, period: ReportPeriod): JSX.Element {
+function renderGraph(api: TuiPluginApi, period: ReportPeriod, metric: UsageTimelineMetric): JSX.Element {
   const result = computeTimelineSafely(period)
   if (result.kind === "error") return <UsageErrorView api={api} error={result.error} />
   if (result.buckets.length === 0) return <UsageEmptyView api={api} periodLabel={periodLabel(period)} />
@@ -163,7 +170,9 @@ function renderGraph(api: TuiPluginApi, period: ReportPeriod): JSX.Element {
       api={api}
       periodLabel={periodLabel(period)}
       buckets={result.buckets}
+      metric={metric}
       onBack={() => showOverview(api, period)}
+      onToggleMetric={(next) => showGraph(api, period, next)}
     />
   )
 }
