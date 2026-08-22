@@ -7,7 +7,9 @@
  * popup can change freely without affecting tracking, tokens, cache or costs.
  */
 
+import type { TimelineBucket } from "../../reporting/usage-report.ts"
 import type { ModelRow, ProviderRow, ReportPeriod, UsageReport } from "../../types/usage.ts"
+import { formatCost, formatTokens } from "./usage-format.ts"
 
 /** The primary summary shown on the first /usage screen. */
 export interface UsageOverviewModel {
@@ -114,4 +116,45 @@ export function buildPeriodSummary(report: UsageReport): UsagePeriodSummary {
 /** Build summaries for a set of periods (used by the History view). */
 export function buildUsagePeriodSummaries(reports: UsageReport[]): UsagePeriodSummary[] {
   return reports.map(buildPeriodSummary)
+}
+
+// ---- Graph view (tokens over time) -------------------------------------------
+
+/** Target bar width in characters — wide enough to read shape, narrow enough
+ *  to fit the popup next to labels and token/cost columns. */
+export const TIMELINE_BAR_WIDTH = 24
+
+const BAR_CHARACTER = "█"
+
+export interface UsageTimelineRowModel {
+  label: string
+  /** Unicode block chars scaled to the busiest bucket; "" for zero buckets. */
+  bar: string
+  totalTokens: number
+  cost: number | null
+  tokensText: string
+  costText: string
+}
+
+/**
+ * Render-ready rows for the "Graph" view. The busiest bucket spans the full
+ * `TIMELINE_BAR_WIDTH`; every bucket with tokens keeps at least one bar
+ * character so activity stays visible, zero buckets render an empty bar.
+ */
+export function buildUsageTimelineModel(buckets: TimelineBucket[]): UsageTimelineRowModel[] {
+  const maxTotal = buckets.reduce((max, bucket) => Math.max(max, bucket.totalTokens), 0)
+  return buckets.map((bucket) => ({
+    label: bucket.label,
+    bar: timelineBar(bucket.totalTokens, maxTotal),
+    totalTokens: bucket.totalTokens,
+    cost: bucket.cost,
+    tokensText: formatTokens(bucket.totalTokens),
+    costText: formatCost(bucket.cost),
+  }))
+}
+
+function timelineBar(totalTokens: number, maxTotal: number): string {
+  if (totalTokens <= 0 || maxTotal <= 0) return ""
+  const width = Math.max(1, Math.round((totalTokens / maxTotal) * TIMELINE_BAR_WIDTH))
+  return BAR_CHARACTER.repeat(Math.min(TIMELINE_BAR_WIDTH, width))
 }

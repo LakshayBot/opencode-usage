@@ -14,7 +14,7 @@ import type { JSX } from "solid-js"
 import type { TuiPluginApi } from "@opencode-ai/plugin/tui"
 import { resolvePaths } from "../../opencode/paths.ts"
 import { HybridPricingProvider } from "../../pricing/modelsdev.ts"
-import { computeReport } from "../../reporting/usage-report.ts"
+import { computeReport, computeUsageTimeline, periodLabel, type TimelineBucket } from "../../reporting/usage-report.ts"
 import { UsageDatabase } from "../../storage/database.ts"
 import type { ReportFilter, ReportPeriod, UsageReport } from "../../types/usage.ts"
 import { formatNumber } from "./usage-format.ts"
@@ -24,8 +24,10 @@ import {
   buildUsageOverview,
   buildUsagePeriodSummaries,
   buildUsageProviders,
+  buildUsageTimelineModel,
   type UsageModelRowModel,
 } from "./usage-view-model.ts"
+import { UsageGraphView } from "./usage-graph.tsx"
 import { UsageOverviewView, type OverviewAction } from "./usage-overview.tsx"
 import {
   UsageHistoryDialog,
@@ -54,6 +56,11 @@ export function showModels(api: TuiPluginApi, period: ReportPeriod): void {
 export function showProviders(api: TuiPluginApi, period: ReportPeriod): void {
   api.ui.dialog.setSize("large")
   api.ui.dialog.replace(() => renderProviders(api, period), undefined)
+}
+
+export function showGraph(api: TuiPluginApi, period: ReportPeriod): void {
+  api.ui.dialog.setSize("large")
+  api.ui.dialog.replace(() => renderGraph(api, period), undefined)
 }
 
 export function showHistory(api: TuiPluginApi, period: ReportPeriod): void {
@@ -120,6 +127,11 @@ function buildActions(api: TuiPluginApi, period: ReportPeriod, report: UsageRepo
     })
   }
   actions.push({
+    title: "Graph",
+    description: "Tokens over time",
+    run: () => showGraph(api, period),
+  })
+  actions.push({
     title: "History",
     description: "Change the time period",
     run: () => showHistory(api, period),
@@ -141,6 +153,21 @@ function renderProviders(api: TuiPluginApi, period: ReportPeriod): JSX.Element {
   const rows = buildUsageProviders(result.report)
   if (rows.length === 0) return <UsageEmptyView api={api} periodLabel={result.report.periodLabel} />
   return <UsageProvidersDialog api={api} rows={rows} />
+}
+
+function renderGraph(api: TuiPluginApi, period: ReportPeriod): JSX.Element {
+  const result = computeTimelineSafely(period)
+  if (result.kind === "error") return <UsageErrorView api={api} error={result.error} />
+  const rows = buildUsageTimelineModel(result.buckets)
+  if (rows.length === 0) return <UsageEmptyView api={api} periodLabel={periodLabel(period)} />
+  return (
+    <UsageGraphView
+      api={api}
+      periodLabel={periodLabel(period)}
+      rows={rows}
+      onBack={() => showOverview(api, period)}
+    />
+  )
 }
 
 function renderHistory(api: TuiPluginApi, period: ReportPeriod): JSX.Element {
@@ -173,6 +200,34 @@ function computeHistorySummaries(
     const pricing = new HybridPricingProvider(database)
     const reports = buildPeriodCandidates(period).map((candidate) => computeReport(database, candidate, {}, { pricing }))
     return { kind: "ok", summaries: buildUsagePeriodSummaries(reports) }
+  } catch (error) {
+    return { kind: "error", error: String(error) }
+  } finally {
+    if (db) {
+      try {
+        db.close()
+      } catch {
+        // closing must never mask the report
+      }
+    }
+  }
+}
+
+/**
+ * Compute the tokens-over-time buckets for the route/period. NEVER throws:
+ * every failure returns an error payload that renders as a visible in-popup
+ * message (same contract as computeReportSafely).
+ */
+export function computeTimelineSafely(
+  period: ReportPeriod,
+  filter: ReportFilter = {},
+): { kind: "ok"; buckets: TimelineBucket[] } | { kind: "error"; error: string } {
+  let db: UsageDatabase | null = null
+  try {
+    const paths = resolvePaths()
+    db = UsageDatabase.open(paths.usageDbPath, { readOnly: true })
+    const pricing = new HybridPricingProvider(db)
+    return { kind: "ok", buckets: computeUsageTimeline(db, period, filter, { pricing }) }
   } catch (error) {
     return { kind: "error", error: String(error) }
   } finally {

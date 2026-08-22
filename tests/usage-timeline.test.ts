@@ -1,0 +1,239 @@
+/**
+ * Tests for the usage timeline (Graph view data) and its view model.
+ *
+ * Dates are pinned to local 2026-06-15 (a Monday) so bucket labels, counts
+ * and boundaries are fully deterministic no matter when the suite runs.
+ */
+
+import { describe, it } from "node:test"
+import assert from "node:assert/strict"
+import path from "node:path"
+import { tmpDir, rmrf } from "./helpers.ts"
+import { UsageDatabase } from "../src/storage/database.ts"
+import {
+  computeUsageTimeline,
+  timelineGranularity,
+  type TimelineBucket,
+} from "../src/reporting/usage-report.ts"
+import { HybridPricingProvider } from "../src/pricing/modelsdev.ts"
+import { buildUsageTimelineModel, TIMELINE_BAR_WIDTH } from "../src/ui/usage/usage-view-model.ts"
+import type { ReportPeriod } from "../src/types/usage.ts"
+
+const NOW = new Date(2026, 5, 15, 14, 20, 0, 0).getTime() // Mon Jun 15 2026, 14:20 local
+const HOUR_MS = 3600_000
+const DAY_MS = 24 * HOUR_MS
+
+interface SeedEvent {
+  key: string
+  ts: number
+  session?: string
+  provider?: string
+  model?: string
+  input?: number
+  output?: number
+}
+
+function seedEvents(dbPath: string, events: SeedEvent[]): void {
+  const db = UsageDatabase.open(dbPath)
+  const insert = db.raw.prepare(
+    `INSERT INTO usage_events (
+       event_key, timestamp, session_id, provider, model,
+       input_tokens, output_tokens, cache_read_tokens, cache_write_tokens,
+       total_tokens, cost, provider_reported_cache
+     ) VALUES (?, ?, ?, ?, ?, ?, ?, 0, 0, ?, ?, 0)`,
+  )
+  for (const e of events) {
+    const input = e.input ?? 1000
+    const output = e.output ?? 100
+    insert.run(e.key, e.ts, e.session ?? "ses_x", e.provider ?? "anthropic", e.model ?? "claude-sonnet-4-6", input, output, input + output, 0.01)
+  }
+  db.close()
+}
+
+function timelineFor(dbPath: string, period: ReportPeriod): TimelineBucket[] {
+  const db = UsageDatabase.open(dbPath, { readOnly: true })
+  try {
+    return computeUsageTimeline(db, period, {}, { pricing: new HybridPricingProvider(db), now: NOW })
+  } finally {
+    db.close()
+  }
+}
+
+/** The single bucket whose [start, end) window contains ts. */
+function bucketContaining(buckets: TimelineBucket[], ts: number): TimelineBucket {
+  const bucket = buckets.find((b) => ts >= b.start && ts < b.end)
+  assert.ok(bucket, `no bucket contains timestamp ${ts}`)
+  return bucket
+}
+
+const sumTokens = (buckets: TimelineBucket[]) => buckets.reduce((sum, b) => sum + b.totalTokens, 0)
+
+describe("computeUsageTimeline", () => {
+  it("buckets 'today' hourly and 'month' daily", () => {
+    const dir = tmpDir()
+    try {
+      const dbPath = path.join(dir, "usage.db")
+      seedEvents(dbPath, [
+        { key: "t1", ts: new Date(2026, 5, 15, 0, 5).getTime(), input: 500, output: 50 },
+        { key: "t2", ts: new Date(2026, 5, 15, 2, 10).getTime(), input: 700, output: 70 },
+        { key: "old", ts: new Date(2026, 5, 5, 9, 30).getTime(), input: 900, output: 90 },
+      ])
+
+      assert.equal(timelineGranularity({ kind: "today" }), "hourly")
+      assert.equal(timelineGranularity({ kind: "month" }), "daily")
+
+      const today = timelineFor(dbPath, { kind: "today" })
+      // hours 00:00 through the current hour 14:00 — empty ones included
+      assert.equal(today.length, 15)
+      assert.equal(today[0]!.label, "00:00")
+      assert.equal(today[14]!.label, "14:00")
+      for (const bucket of today) assert.match(bucket.label, /^\d{2}:00$/)
+      assert.equal(sumTokens(today), 500 + 50 + 700 + 70)
+      assert.equal(bucketContaining(today, new Date(2026, 5, 15, 0, 5).getTime()).totalTokens, 550)
+      assert.equal(bucketContaining(today, new Date(2026, 5, 15, 2, 10).getTime()).totalTokens, 770)
+
+      const month = timelineFor(dbPath, { kind: "month" })
+      // May 16 .. Jun 15 inclusive — one bucket per day, empties included
+      assert.equal(month.length, 31)
+      assert.equal(month[0]!.start, new Date(2026, 4, 16).getTime())
+      assert.equal(month[0]!.label, "Sat 16")
+      assert.equal(month[30]!.label, "Mon 15")
+      for (const bucket of month) assert.match(bucket.label, /^[A-Z][a-z]{2} \d{1,2}$/)
+      assert.equal(sumTokens(month), 2310)
+      assert.equal(bucketContaining(month, new Date(2026, 5, 5, 9, 30).getTime()).totalTokens, 990)
+    } finally {
+      rmrf(dir)
+    }
+  })
+
+  it("orders buckets chronologically and keeps empty ones", () => {
+    const dir = tmpDir()
+    try {
+      const dbPath = path.join(dir, "usage.db")
+      const eventTs = new Date(2026, 5, 10, 11, 45).getTime()
+      seedEvents(dbPath, [{ key: "only", ts: eventTs, input: 400, output: 40 }])
+
+      const month = timelineFor(dbPath, { kind: "month" })
+      assert.equal(month.length, 31)
+      for (let i = 1; i < month.length; i++) {
+        assert.ok(month[i]!.start > month[i - 1]!.start, `bucket ${i} out of order`)
+        assert.ok(month[i]!.end > month[i]!.start, `bucket ${i} has empty range`)
+      }
+      const nonEmpty = month.filter((b) => b.totalTokens > 0)
+      assert.equal(nonEmpty.length, 1)
+      assert.equal(nonEmpty[0]!.start, new Date(2026, 5, 10).getTime())
+      assert.equal(nonEmpty[0]!.inputTokens, 400)
+      assert.equal(nonEmpty[0]!.outputTokens, 40)
+      // every other bucket is a real zero bucket, not missing
+      assert.equal(month.filter((b) => b.totalTokens === 0).length, 30)
+      assert.equal(sumTokens(month), 440)
+    } finally {
+      rmrf(dir)
+    }
+  })
+
+  it("propagates unknown pricing as null cost per bucket, without leaking into others", () => {
+    const dir = tmpDir()
+    try {
+      const dbPath = path.join(dir, "usage.db")
+      const knownTs = new Date(2026, 5, 12, 10, 0).getTime()
+      const mysteryTs = new Date(2026, 5, 10, 8, 0).getTime()
+      seedEvents(dbPath, [
+        { key: "known", ts: knownTs },
+        { key: "mystery", ts: mysteryTs, provider: "mystery-provider", model: "mystery-model" },
+        { key: "known-same-day", ts: mysteryTs + HOUR_MS }, // same bucket as the mystery event
+      ])
+
+      const month = timelineFor(dbPath, { kind: "month" })
+      const knownBucket = bucketContaining(month, knownTs)
+      const mixedBucket = bucketContaining(month, mysteryTs)
+      assert.equal(typeof knownBucket.cost, "number")
+      assert.ok(knownBucket.cost! > 0)
+      // any unknown-pricing event in a bucket makes that bucket's cost null…
+      assert.equal(mixedBucket.cost, null)
+      // …but its tokens still count, and neighbors stay unaffected
+      assert.equal(mixedBucket.totalTokens, 1100 + 1100)
+      assert.equal(knownBucket.totalTokens, 1100)
+    } finally {
+      rmrf(dir)
+    }
+  })
+
+  it("'all' caps to the 30 most recent daily buckets and drops older events", () => {
+    const dir = tmpDir()
+    try {
+      const dbPath = path.join(dir, "usage.db")
+      seedEvents(dbPath, [
+        { key: "ancient", ts: new Date(2026, 4, 6, 12, 0).getTime(), input: 9999, output: 999 }, // May 6 — outside the cap
+        { key: "recent", ts: NOW - 2 * HOUR_MS, input: 300, output: 30 },
+      ])
+
+      const all = timelineFor(dbPath, { kind: "all" })
+      assert.equal(all.length, 30)
+      assert.equal(all[0]!.start, new Date(2026, 4, 17).getTime())
+      assert.equal(all[29]!.label, "Mon 15")
+      for (let i = 1; i < all.length; i++) {
+        assert.ok(all[i]!.start > all[i - 1]!.start)
+      }
+      assert.equal(sumTokens(all), 330)
+    } finally {
+      rmrf(dir)
+    }
+  })
+
+  it("buckets the current session hourly across its own span", () => {
+    const dir = tmpDir()
+    try {
+      const dbPath = path.join(dir, "usage.db")
+      seedEvents(dbPath, [
+        { key: "s1", ts: new Date(2026, 5, 15, 9, 0).getTime(), session: "ses_g" },
+        { key: "s2", ts: new Date(2026, 5, 15, 12, 30).getTime(), session: "ses_g" },
+        { key: "other", ts: new Date(2026, 5, 15, 10, 0).getTime(), session: "ses_other" },
+      ])
+
+      const session = timelineFor(dbPath, { kind: "session", sessionId: "ses_g" })
+      assert.equal(session.length, 4) // 09:00 .. 12:00
+      assert.equal(session[0]!.label, "09:00")
+      assert.equal(session[3]!.label, "12:00")
+      assert.equal(session.filter((b) => b.totalTokens === 0).length, 2)
+      assert.equal(sumTokens(session), 2200)
+    } finally {
+      rmrf(dir)
+    }
+  })
+})
+
+describe("buildUsageTimelineModel", () => {
+  function bucket(totalTokens: number, cost: number | null = 0.5): TimelineBucket {
+    return { label: "Mon 15", start: 0, end: DAY_MS, inputTokens: totalTokens, outputTokens: 0, totalTokens, cost }
+  }
+
+  it("scales bars to the max bucket and leaves zero buckets empty", () => {
+    const rows = buildUsageTimelineModel([bucket(800, 0.02), bucket(400, 0.01), bucket(0, 0)])
+    assert.equal(rows.length, 3)
+    assert.equal(rows[0]!.bar, "█".repeat(TIMELINE_BAR_WIDTH)) // max bucket -> full width
+    assert.equal(rows[1]!.bar, "█".repeat(TIMELINE_BAR_WIDTH / 2))
+    assert.equal(rows[2]!.bar, "") // zero bucket -> empty bar
+  })
+
+  it("keeps at least one bar character for any positive bucket", () => {
+    const rows = buildUsageTimelineModel([bucket(1_000_000, 1), bucket(1, 0.001)])
+    assert.equal(rows[0]!.bar.length, TIMELINE_BAR_WIDTH)
+    assert.ok(rows[1]!.bar.length >= 1)
+    assert.equal(rows[1]!.bar.length, 1)
+  })
+
+  it("formats tokens and costs with the shared helpers, Unknown for null cost", () => {
+    const rows = buildUsageTimelineModel([bucket(1500, 0.03), bucket(0, null)])
+    assert.equal(rows[0]!.tokensText, "1.5K")
+    assert.equal(rows[0]!.costText, "$0.03")
+    assert.equal(rows[0]!.cost, 0.03)
+    assert.equal(rows[1]!.tokensText, "0")
+    assert.equal(rows[1]!.costText, "Unknown")
+    assert.equal(rows[1]!.cost, null)
+  })
+
+  it("maps no buckets to no rows", () => {
+    assert.deepEqual(buildUsageTimelineModel([]), [])
+  })
+})
