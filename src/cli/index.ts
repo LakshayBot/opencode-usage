@@ -7,6 +7,8 @@
  *   opencode-usage uninstall --purge   ...and delete the database
  *   opencode-usage status          Show installation + tracking status
  *   opencode-usage stats [period]  Print usage report (session|today|week|month|all)
+ *   opencode-usage export [--csv|--json] [period] [--out <file>]
+ *                                  Dump daily buckets + per-model rows
  *   opencode-usage import          Import history from opencode.db
  *   opencode-usage update-pricing  Sync pricing from models.dev
  *   opencode-usage reset           Wipe usage history (interactive confirm)
@@ -28,6 +30,7 @@ import { HybridPricingProvider, syncPricingFromModelsDev } from "../pricing/mode
 import { UsageDatabase, openDatabase, wipeDatabase } from "../storage/database.ts"
 import { HistoricalImporter } from "../opencode/historical-importer.ts"
 import { checkForUpdate } from "../update/checker.ts"
+import { runExport } from "./export.ts"
 import type { ReportFilter, ReportPeriod } from "../types/usage.ts"
 
 import { VERSION } from "../version.ts"
@@ -47,7 +50,7 @@ function error(message: string): never {
   process.exit(1)
 }
 
-function expandHome(p: string): string {
+export function expandHome(p: string): string {
   if (p === "~") return process.env.HOME ?? p
   if (p.startsWith("~/")) return (process.env.HOME ?? "") + p.slice(1)
   return p
@@ -192,6 +195,14 @@ function cmdStats(args: string[], flags: Record<string, string | boolean>): void
 }
 
 // ---------------------------------------------------------------------------
+// export
+// ---------------------------------------------------------------------------
+
+function cmdExport(args: string[], flags: Record<string, string | boolean>): void {
+  runExport({ args, flags })
+}
+
+// ---------------------------------------------------------------------------
 // import
 // ---------------------------------------------------------------------------
 
@@ -317,15 +328,19 @@ Usage:
   opencode-usage status             Show installation + tracking status
   opencode-usage stats [period]     Print a usage report
   opencode-usage stats --json       Machine-readable report
+  opencode-usage export [--csv|--json] [period] [--out <file>]
+                                    Dump daily buckets + per-model rows
   opencode-usage import             Import history from opencode's database
   opencode-usage update-pricing     Sync model pricing from models.dev
   opencode-usage reset [--yes]      Wipe usage history
 
-Periods: session | today | week | month | all   (stats default: session)
+Periods: session | today | week | month | all   (stats default: session, export default: all)
 Filters: stats [period] model <id> | provider <id>
 
 Options:
   --json              JSON output for stats
+  --csv               CSV output for export
+  --out <file>        Write export to a file instead of stdout
   --since <date>      Import only events after this date (ISO)
   --opencode-db <path> Override the opencode database path for import
   -y, --yes           Skip confirmations (automation)
@@ -347,6 +362,9 @@ export async function main(): Promise<void> {
       break
     case "stats":
       cmdStats(positional.slice(1), flags)
+      break
+    case "export":
+      cmdExport(positional.slice(1), flags)
       break
     case "import":
       await cmdImport(positional.slice(1), flags)
