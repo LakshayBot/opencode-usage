@@ -121,6 +121,18 @@ export interface ProjectRow {
   cost: number | null
 }
 
+/** One session's aggregated usage within the report period. */
+export interface SessionRow {
+  sessionId: string
+  /** Title joined from `sessions` ('(untitled)' when no row exists). */
+  title: string
+  requests: number
+  totalTokens: number
+  cost: number | null
+  /** Unix ms of the session's most recent usage event. */
+  lastActivity: number
+}
+
 export interface UsageReport {
   period: ReportPeriod
   periodLabel: string
@@ -176,6 +188,8 @@ export interface UsageReport {
   perProvider: ProviderRow[]
   perAgent: AgentRow[]
   perProject: ProjectRow[]
+  /** Cost desc (unknown last), token volume tiebreak, capped at the top 50. */
+  perSession: SessionRow[]
 
   averages: {
     /** Gross input tokens (incl. cache) per user message. */

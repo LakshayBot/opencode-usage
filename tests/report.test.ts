@@ -306,6 +306,142 @@ describe("computeReport per-agent / per-project grouping", () => {
   })
 })
 
+describe("computeReport per-session grouping", () => {
+  const now = Date.now()
+
+  interface SeedRow {
+    key: string
+    session: string
+    tokens?: number
+    cost?: number | null
+    ts?: number
+  }
+
+  function seed(dbPath: string, rows: SeedRow[], sessionTitles: Record<string, string> = {}): void {
+    const db = UsageDatabase.open(dbPath)
+    const insertEvent = db.raw.prepare(
+      `INSERT INTO usage_events (
+         event_key, timestamp, session_id, provider, model,
+         input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, total_tokens, cost, provider_reported_cache
+       ) VALUES (?, ?, ?, 'anthropic', 'claude-sonnet-4-6', ?, 0, 0, 0, ?, ?, 0)`,
+    )
+    for (const r of rows) {
+      const tokens = r.tokens ?? 100
+      insertEvent.run(r.key, r.ts ?? now - 60_000, r.session, tokens, tokens, r.cost === undefined ? 0.01 : r.cost)
+    }
+    const upsert = db.raw.prepare(
+      `INSERT INTO sessions (id, project_id, parent_id, agent, title, created, updated)
+       VALUES (?, NULL, NULL, NULL, ?, ?, ?)`,
+    )
+    for (const [id, title] of Object.entries(sessionTitles)) {
+      upsert.run(id, title, now - 3600_000, now)
+    }
+    db.close()
+  }
+
+  function reportFor(dbPath: string, period: Parameters<typeof computeReport>[1]): UsageReport {
+    const db = UsageDatabase.open(dbPath, { readOnly: true })
+    try {
+      return computeReport(db, period, {}, { pricing: new HybridPricingProvider(db), now })
+    } finally {
+      db.close()
+    }
+  }
+
+  it("groups events per session and LEFT JOINs titles, '(untitled)' when the session row is missing", () => {
+    const dir = tmpDir()
+    try {
+      const dbPath = path.join(dir, "usage.db")
+      seed(
+        dbPath,
+        [
+          { key: "e1", session: "ses_titled", tokens: 200, cost: 0.04, ts: now - 120_000 },
+          { key: "e2", session: "ses_titled", tokens: 100, cost: null, ts: now - 60_000 },
+          { key: "e3", session: "ses_ghost", tokens: 50, cost: 0.02 },
+        ],
+        { ses_titled: "Fix login bug" },
+      )
+      const report = reportFor(dbPath, { kind: "all" })
+      assert.deepEqual(
+        report.perSession.map((row) => [row.sessionId, row.title]),
+        [
+          ["ses_titled", "Fix login bug"],
+          ["ses_ghost", "(untitled)"],
+        ],
+      )
+      // aggregation across a session's events; cost sums known costs only
+      const titled = report.perSession[0]!
+      assert.equal(titled.requests, 2)
+      assert.equal(titled.totalTokens, 300)
+      assert.ok(Math.abs(titled.cost! - 0.04) < 1e-12)
+      assert.equal(titled.lastActivity, now - 60_000)
+      assert.equal(report.perSession[1]!.requests, 1)
+    } finally {
+      rmrf(dir)
+    }
+  })
+
+  it("sorts cost desc (unknown last), ties broken by tokens desc — mirroring perAgent/perProject", () => {
+    const dir = tmpDir()
+    try {
+      const dbPath = path.join(dir, "usage.db")
+      seed(dbPath, [
+        { key: "s1", session: "spendy", tokens: 300, cost: 0.03 },
+        { key: "c1", session: "cheap", tokens: 450, cost: 0.01 },
+        { key: "f1", session: "free", tokens: 5000, cost: null },
+        { key: "t1", session: "tie-a", tokens: 100, cost: 0.02 },
+        { key: "t2", session: "tie-b", tokens: 400, cost: 0.02 },
+      ])
+      const report = reportFor(dbPath, { kind: "all" })
+      assert.deepEqual(
+        report.perSession.map((row) => row.sessionId),
+        ["spendy", "tie-b", "tie-a", "cheap", "free"],
+      )
+    } finally {
+      rmrf(dir)
+    }
+  })
+
+  it("caps at 50 rows, keeping the top-spend sessions", () => {
+    const dir = tmpDir()
+    try {
+      const dbPath = path.join(dir, "usage.db")
+      const rows: SeedRow[] = []
+      const titles: Record<string, string> = {}
+      for (let i = 0; i < 55; i++) {
+        rows.push({ key: `k${i}`, session: `s${i}`, tokens: 100 + i, cost: (i + 1) / 10_000 })
+        titles[`s${i}`] = `session ${i}`
+      }
+      seed(dbPath, rows, titles)
+      const report = reportFor(dbPath, { kind: "all" })
+      assert.equal(report.perSession.length, 50)
+      assert.equal(report.perSession[0]!.sessionId, "s54")
+      assert.equal(report.perSession[49]!.sessionId, "s5")
+      assert.equal(report.counts.modelRequests, 55)
+    } finally {
+      rmrf(dir)
+    }
+  })
+
+  it("respects the period window and yields an empty array with no events", () => {
+    const dir = tmpDir()
+    try {
+      const dbPath = path.join(dir, "usage.db")
+      seed(dbPath, [
+        { key: "fresh", session: "ses_now", tokens: 10, ts: now - 60_000 },
+        { key: "stale", session: "ses_old", tokens: 20, ts: now - 40 * 24 * 3600_000 },
+      ])
+      assert.deepEqual(reportFor(dbPath, { kind: "today" }).perSession.map((row) => row.sessionId), ["ses_now"])
+      assert.deepEqual(reportFor(dbPath, { kind: "week" }).perSession.map((row) => row.sessionId), ["ses_now"])
+      const emptyDb = path.join(dir, "empty.db")
+      seed(emptyDb, [])
+      assert.deepEqual(reportFor(emptyDb, { kind: "all" }).perSession, [])
+    } finally {
+      rmrf(dir)
+    }
+  })
+})
+
 describe("buildComparison", () => {
   // Fixed clock: Wed Jul 15 2026, 12:00 local. Windows are fully deterministic:
   //   month: current [Jun 15 12:00, open), previous [May 16 12:00, Jun 15 12:00)

@@ -32,6 +32,9 @@ export interface ReportOptions {
   now?: number
 }
 
+/** Cap for the per-session breakdown: only the top 50 sessions by spend. */
+const MAX_SESSION_ROWS = 50
+
 interface EventRow {
   provider: string | null
   model: string | null
@@ -666,6 +669,45 @@ export function computeReport(db: UsageDatabase, period: ReportPeriod, filter: R
     }))
     .sort(costDescThenTokensDesc)
 
+  // ---- per-session breakdown -------------------------------------------------
+  // Grouped in SQL over the exact same event selection as above, LEFT JOINing
+  // sessions for titles (events can outlive their session rows — those render
+  // as '(untitled)'). Cost follows the group convention: sum of known costs
+  // only (SUM ignores NULLs), null when every event in the session lacks one.
+  const sessionRows = (
+    db.raw
+      .prepare(
+        `SELECT e.session_id AS sessionId,
+                s.title AS title,
+                COUNT(*) AS requests,
+                COALESCE(SUM(e.total_tokens), 0) AS totalTokens,
+                SUM(e.cost) AS cost,
+                MAX(e.timestamp) AS lastActivity
+         FROM usage_events e
+         LEFT JOIN sessions s ON s.id = e.session_id
+         ${whereSql}
+         GROUP BY e.session_id`,
+      )
+      .all(...whereParams) as unknown as Array<{
+      sessionId: string
+      title: string | null
+      requests: number
+      totalTokens: number
+      cost: number | null
+      lastActivity: number
+    }>
+  )
+    .map((row) => ({
+      sessionId: row.sessionId,
+      title: row.title ?? "(untitled)",
+      requests: row.requests,
+      totalTokens: row.totalTokens,
+      cost: row.cost,
+      lastActivity: row.lastActivity,
+    }))
+    .sort(costDescThenTokensDesc)
+    .slice(0, MAX_SESSION_ROWS)
+
   const costSortable = modelRows.filter((row) => row.cost !== null)
   const mostUsed = modelRows[0] ?? null
   const mostExpensive = costSortable.length
@@ -714,6 +756,7 @@ export function computeReport(db: UsageDatabase, period: ReportPeriod, filter: R
     perProvider: providerRows,
     perAgent: agentRows,
     perProject: projectRows,
+    perSession: sessionRows,
     averages: {
       inputTokensPerUserMessage: userMessages > 0 ? totals.grossInput / userMessages : null,
       outputTokensPerAssistantResponse: assistantMessages > 0 ? totals.outputTokens / assistantMessages : null,

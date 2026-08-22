@@ -8,7 +8,7 @@
  */
 
 import type { PeriodComparison, TimelineBucket } from "../../reporting/usage-report.ts"
-import type { AgentRow, ModelRow, ProjectRow, ProviderRow, ReportPeriod, UsageReport } from "../../types/usage.ts"
+import type { AgentRow, ModelRow, ProjectRow, ProviderRow, ReportPeriod, SessionRow, UsageReport } from "../../types/usage.ts"
 import { formatCost, formatTokens } from "./usage-format.ts"
 
 /** The primary summary shown on the first /usage screen. */
@@ -133,6 +133,35 @@ export function buildUsageProjects(report: UsageReport): UsageProjectRowModel[] 
     inputTokens: row.inputTokens,
     outputTokens: row.outputTokens,
     cost: row.cost,
+  }))
+}
+
+export interface UsageSessionRowModel {
+  sessionId: string
+  /** Session title truncated to MAX_TITLE_CHARS (ellipsis included). */
+  displayTitle: string
+  requests: number
+  totalTokens: number
+  cost: number | null
+  lastActivity: number
+}
+
+/** Long session titles must not push the token/cost columns out of the popup. */
+export const MAX_SESSION_TITLE_CHARS = 40
+
+function truncateTitle(title: string): string {
+  if (title.length <= MAX_SESSION_TITLE_CHARS) return title
+  return title.slice(0, MAX_SESSION_TITLE_CHARS - 1) + "…"
+}
+
+export function buildUsageSessions(report: UsageReport): UsageSessionRowModel[] {
+  return report.perSession.map((row: SessionRow) => ({
+    sessionId: row.sessionId,
+    displayTitle: truncateTitle(row.title),
+    requests: row.requests,
+    totalTokens: row.totalTokens,
+    cost: row.cost,
+    lastActivity: row.lastActivity,
   }))
 }
 

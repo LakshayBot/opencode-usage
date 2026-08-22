@@ -27,6 +27,7 @@ import {
   buildUsagePeriodSummaries,
   buildUsageProjects,
   buildUsageProviders,
+  buildUsageSessions,
   type UsageModelRowModel,
   type UsageTimelineMetric,
 } from "./usage-view-model.ts"
@@ -34,6 +35,7 @@ import { UsageAgentsDialog } from "./usage-agents.tsx"
 import { UsageGraphView } from "./usage-graph.tsx"
 import { UsageOverviewView, type OverviewAction } from "./usage-overview.tsx"
 import { UsageProjectsDialog } from "./usage-projects.tsx"
+import { UsageSessionsDialog } from "./usage-sessions.tsx"
 import {
   UsageHistoryDialog,
   UsageModelDetailView,
@@ -71,6 +73,11 @@ export function showAgents(api: TuiPluginApi, period: ReportPeriod): void {
 export function showProjects(api: TuiPluginApi, period: ReportPeriod): void {
   api.ui.dialog.setSize("large")
   api.ui.dialog.replace(() => renderProjects(api, period), undefined)
+}
+
+export function showSessions(api: TuiPluginApi, period: ReportPeriod): void {
+  api.ui.dialog.setSize("large")
+  api.ui.dialog.replace(() => renderSessions(api, period), undefined)
 }
 
 export function showGraph(api: TuiPluginApi, period: ReportPeriod, metric: UsageTimelineMetric = "tokens"): void {
@@ -162,6 +169,13 @@ function buildActions(api: TuiPluginApi, period: ReportPeriod, report: UsageRepo
       run: () => showProjects(api, period),
     })
   }
+  if (report.perSession.length > 0) {
+    actions.push({
+      title: "By session",
+      description: `${formatNumber(report.perSession.length)} session${report.perSession.length === 1 ? "" : "s"}`,
+      run: () => showSessions(api, period),
+    })
+  }
   actions.push({
     title: "Graph",
     description: "Tokens over time",
@@ -205,6 +219,14 @@ function renderProjects(api: TuiPluginApi, period: ReportPeriod): JSX.Element {
   const rows = buildUsageProjects(result.report)
   if (rows.length === 0) return <UsageEmptyView api={api} periodLabel={result.report.periodLabel} />
   return <UsageProjectsDialog api={api} rows={rows} onBack={() => showOverview(api, period)} />
+}
+
+function renderSessions(api: TuiPluginApi, period: ReportPeriod): JSX.Element {
+  const result = computeReportSafely(period)
+  if (result.kind === "error") return <UsageErrorView api={api} error={result.error} />
+  const rows = buildUsageSessions(result.report)
+  if (rows.length === 0) return <UsageEmptyView api={api} periodLabel={result.report.periodLabel} />
+  return <UsageSessionsDialog api={api} rows={rows} onBack={() => showOverview(api, period)} />
 }
 
 function renderGraph(api: TuiPluginApi, period: ReportPeriod, metric: UsageTimelineMetric): JSX.Element {

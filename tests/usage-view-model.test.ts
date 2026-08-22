@@ -8,6 +8,8 @@ import {
   buildUsagePeriodSummaries,
   buildUsageProjects,
   buildUsageProviders,
+  buildUsageSessions,
+  MAX_SESSION_TITLE_CHARS,
 } from "../src/ui/usage/usage-view-model.ts"
 import type { PeriodComparison } from "../src/reporting/usage-report.ts"
 import type { UsageReport } from "../src/types/usage.ts"
@@ -37,6 +39,7 @@ function makeReport(overrides: Partial<UsageReport> = {}): UsageReport {
     perProvider: [],
     perAgent: [],
     perProject: [],
+    perSession: [],
     averages: { inputTokensPerUserMessage: null, outputTokensPerAssistantResponse: null },
     topModels: { mostUsed: null, mostExpensive: null },
     largestRequest: null,
@@ -142,6 +145,47 @@ describe("buildUsageAgents / buildUsageProjects", () => {
   it("empty grouping arrays map to empty view models", () => {
     assert.deepEqual(buildUsageAgents(makeReport()), [])
     assert.deepEqual(buildUsageProjects(makeReport()), [])
+  })
+})
+
+describe("buildUsageSessions", () => {
+  it("maps per-session rows through with titles truncated to the cap", () => {
+    const longTitle = "x".repeat(60)
+    const report = makeReport({
+      perSession: [
+        { sessionId: "ses_a", title: longTitle, requests: 3, totalTokens: 17100, cost: 0.03, lastActivity: 100 },
+        { sessionId: "ses_b", title: "(untitled)", requests: 1, totalTokens: 900, cost: null, lastActivity: 200 },
+      ],
+    })
+    const rows = buildUsageSessions(report)
+    assert.equal(rows.length, 2)
+    assert.equal(rows[0]!.sessionId, "ses_a")
+    assert.equal(rows[0]!.displayTitle.length, MAX_SESSION_TITLE_CHARS)
+    assert.ok(rows[0]!.displayTitle.endsWith("…"))
+    assert.equal(rows[1]!.displayTitle, "(untitled)")
+    assert.deepEqual(
+      [rows[0]!.requests, rows[0]!.totalTokens, rows[0]!.cost, rows[0]!.lastActivity],
+      [3, 17100, 0.03, 100],
+    )
+    assert.deepEqual([rows[1]!.requests, rows[1]!.cost], [1, null])
+  })
+
+  it("keeps titles of exactly the cap length unchanged and truncates one past it", () => {
+    const exact = "y".repeat(MAX_SESSION_TITLE_CHARS)
+    const over = `${exact}z`
+    const report = makeReport({
+      perSession: [
+        { sessionId: "s1", title: exact, requests: 1, totalTokens: 10, cost: null, lastActivity: 1 },
+        { sessionId: "s2", title: over, requests: 1, totalTokens: 20, cost: null, lastActivity: 2 },
+      ],
+    })
+    const rows = buildUsageSessions(report)
+    assert.equal(rows[0]!.displayTitle, exact)
+    assert.equal(rows[1]!.displayTitle, `${"y".repeat(MAX_SESSION_TITLE_CHARS - 1)}…`)
+  })
+
+  it("empty per-session arrays map to empty view models", () => {
+    assert.deepEqual(buildUsageSessions(makeReport()), [])
   })
 })
 
