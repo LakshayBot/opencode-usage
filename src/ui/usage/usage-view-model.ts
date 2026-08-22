@@ -7,6 +7,7 @@
  * popup can change freely without affecting tracking, tokens, cache or costs.
  */
 
+import type { Budgets } from "../../config/budgets.ts"
 import type { PeriodComparison, TimelineBucket } from "../../reporting/usage-report.ts"
 import type { AgentRow, ModelRow, ProjectRow, ProviderRow, ReportPeriod, SessionRow, UsageReport } from "../../types/usage.ts"
 import { formatCost, formatTokens } from "./usage-format.ts"
@@ -285,4 +286,50 @@ export function buildComparisonModel(cmp: PeriodComparison): UsageComparisonMode
     totalTokensText,
     costText,
   }
+}
+
+// ---- budgets (spend vs configured limits) ------------------------------------
+
+export type BudgetLineLevel = "ok" | "warn" | "over"
+
+export interface BudgetLineModel {
+  label: "Daily" | "Monthly"
+  /** Ready-to-render line, e.g. '$2.10 of $5.00 (42%)'. Unknown spend renders
+   *  as 'unknown of $5.00' — the leading 'unknown' is the renderer's cue for
+   *  distinct muted styling. */
+  text: string
+  level: BudgetLineLevel
+}
+
+export interface UsageBudgetModel {
+  /** False -> the overview hides the block entirely (no budgets configured). */
+  visible: boolean
+  lines: BudgetLineModel[]
+}
+
+/** Integer percent thresholds; Math.round absorbs float noise in warnAt*100. */
+function budgetLine(label: "Daily" | "Monthly", budget: number, spend: number | null, warnAt: number): BudgetLineModel {
+  if (spend === null) {
+    return { label, text: `unknown of ${formatCost(budget)}`, level: "ok" }
+  }
+  // budget 0 with positive spend can't be expressed as a percent — it is over.
+  const ratio = budget > 0 ? spend / budget : spend > 0 ? Number.POSITIVE_INFINITY : 0
+  const pct = Number.isFinite(ratio) ? Math.round(ratio * 100) : null
+  const level: BudgetLineLevel = pct === null || pct >= 100 ? "over" : pct >= Math.round(warnAt * 100) ? "warn" : "ok"
+  return { label, text: `${formatCost(spend)} of ${formatCost(budget)} (${pct ?? ">100"}%)`, level }
+}
+
+/**
+ * Render-ready budget lines for the overview, one per configured window
+ * ('Daily' first). Hidden entirely when no budgets are configured; a null
+ * spend (unknown-cost event in the window) keeps the line visible but muted.
+ */
+export function buildBudgetModel(budgets: Budgets | null, spendDaily: number | null, spendMonthly: number | null): UsageBudgetModel {
+  if (!budgets || (budgets.daily === null && budgets.monthly === null)) {
+    return { visible: false, lines: [] }
+  }
+  const lines: BudgetLineModel[] = []
+  if (budgets.daily !== null) lines.push(budgetLine("Daily", budgets.daily, spendDaily, budgets.warnAt))
+  if (budgets.monthly !== null) lines.push(budgetLine("Monthly", budgets.monthly, spendMonthly, budgets.warnAt))
+  return { visible: true, lines }
 }

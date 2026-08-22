@@ -186,6 +186,42 @@ function aggregateWindow(db: UsageDatabase, filter: ReportFilter, start: number,
   return { requests: row.requests, totalTokens: row.totalTokens, cost }
 }
 
+// ---- budget windows ---------------------------------------------------------
+//
+// Budgets reset on LOCAL calendar boundaries: the daily window starts at local
+// midnight, the monthly window on the 1st at local midnight. Spend is summed
+// from that boundary onward with no upper edge (the window always reaches now).
+
+/** Local midnight of the day containing `now`. */
+export function startOfLocalDay(now: number): number {
+  const d = new Date(now)
+  return new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime()
+}
+
+/** Local midnight of the 1st of the month containing `now`. */
+export function startOfLocalMonth(now: number): number {
+  const d = new Date(now)
+  return new Date(d.getFullYear(), d.getMonth(), 1).getTime()
+}
+
+/**
+ * Total spend over `[startTsLocal, …)` for the budget display. Follows the
+ * cost.unknown convention used everywhere else in this module: a single
+ * unknown-cost event anywhere in the window makes the WHOLE window's cost
+ * unknown (null) instead of silently under-counting.
+ */
+export function spendSince(db: UsageDatabase, startTsLocal: number): number | null {
+  const row = db.raw
+    .prepare(
+      `SELECT SUM(e.cost) AS costSum,
+              SUM(CASE WHEN e.cost IS NULL THEN 1 ELSE 0 END) AS costUnknowns
+       FROM usage_events e
+       WHERE e.timestamp >= ?`,
+    )
+    .get(startTsLocal) as { costSum: number | null; costUnknowns: number | null }
+  return (row.costUnknowns ?? 0) > 0 ? null : (row.costSum ?? 0)
+}
+
 export function buildComparison(db: UsageDatabase, period: ReportPeriod, filter: ReportFilter = {}, options: ReportOptions): PeriodComparison {
   const label = periodLabel(period)
   if (period.kind === "session" || period.kind === "all") {

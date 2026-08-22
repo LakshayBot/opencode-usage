@@ -12,14 +12,26 @@
 
 import type { JSX } from "solid-js"
 import type { TuiPluginApi } from "@opencode-ai/plugin/tui"
+import { budgetsConfigDir, loadBudgets } from "../../config/budgets.ts"
 import { resolvePaths } from "../../opencode/paths.ts"
 import { HybridPricingProvider } from "../../pricing/modelsdev.ts"
-import { buildComparison, computeReport, computeUsageTimeline, periodLabel, type PeriodComparison, type TimelineBucket } from "../../reporting/usage-report.ts"
+import {
+  buildComparison,
+  computeReport,
+  computeUsageTimeline,
+  periodLabel,
+  spendSince,
+  startOfLocalDay,
+  startOfLocalMonth,
+  type PeriodComparison,
+  type TimelineBucket,
+} from "../../reporting/usage-report.ts"
 import { UsageDatabase } from "../../storage/database.ts"
 import type { ReportFilter, ReportPeriod, UsageReport } from "../../types/usage.ts"
 import { formatNumber } from "./usage-format.ts"
 import { UsageEmptyView, UsageErrorView } from "./usage-view.tsx"
 import {
+  buildBudgetModel,
   buildComparisonModel,
   buildUsageAgents,
   buildUsageModels,
@@ -28,6 +40,7 @@ import {
   buildUsageProjects,
   buildUsageProviders,
   buildUsageSessions,
+  type UsageBudgetModel,
   type UsageModelRowModel,
   type UsageTimelineMetric,
 } from "./usage-view-model.ts"
@@ -43,7 +56,7 @@ import {
   UsageProvidersDialog,
 } from "./usage-views.tsx"
 
-type ReportResult = { kind: "ok"; report: UsageReport; comparison: PeriodComparison } | { kind: "error"; error: string }
+type ReportResult = { kind: "ok"; report: UsageReport; comparison: PeriodComparison; budget: UsageBudgetModel } | { kind: "error"; error: string }
 
 /** Open /usage for the given period. */
 export function openUsage(api: TuiPluginApi, period: ReportPeriod): void {
@@ -129,6 +142,7 @@ function renderOverview(api: TuiPluginApi, period: ReportPeriod, selectedIndex =
       api={api}
       overview={overview}
       comparison={buildComparisonModel(result.comparison)}
+      budget={result.budget}
       actions={actions}
       tabs={buildPeriodTabs(api)}
       activePeriod={period}
@@ -334,6 +348,7 @@ export function computeReportSafely(
       kind: "ok",
       report: computeReport(db, period, filter, { pricing }),
       comparison: buildComparison(db, period, filter, { pricing }),
+      budget: computeBudgetModel(db),
     }
   } catch (error) {
     return { kind: "error", error: String(error) }
@@ -345,5 +360,24 @@ export function computeReportSafely(
         // closing must never mask the report
       }
     }
+  }
+}
+
+/**
+ * Budget lines for the overview. Budgets are read once per renderOverview call
+ * (a cheap synchronous fs read); spend windows are LOCAL calendar day/month.
+ * Like every render path here this NEVER throws — any failure simply hides
+ * the block.
+ */
+function computeBudgetModel(db: UsageDatabase): UsageBudgetModel {
+  try {
+    const budgets = loadBudgets(budgetsConfigDir())
+    if (!budgets) return { visible: false, lines: [] }
+    const now = Date.now()
+    const daily = budgets.daily !== null ? spendSince(db, startOfLocalDay(now)) : null
+    const monthly = budgets.monthly !== null ? spendSince(db, startOfLocalMonth(now)) : null
+    return buildBudgetModel(budgets, daily, monthly)
+  } catch {
+    return { visible: false, lines: [] }
   }
 }
