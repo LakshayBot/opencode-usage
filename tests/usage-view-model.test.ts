@@ -57,6 +57,7 @@ describe("buildUsageOverview", () => {
     assert.equal(view.totalTokens, 17100)
     assert.equal(view.inputTokens, 3000)
     assert.equal(view.outputTokens, 800)
+    assert.equal(view.reasoningTokens, 100)
     assert.equal(view.cacheReadTokens, 13000)
     assert.equal(view.cacheWriteTokens, 300)
     assert.equal(view.cacheAvailable, true)

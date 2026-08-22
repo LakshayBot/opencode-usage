@@ -24,7 +24,6 @@ import {
   buildUsageOverview,
   buildUsagePeriodSummaries,
   buildUsageProviders,
-  buildUsageTimelineModel,
   type UsageModelRowModel,
 } from "./usage-view-model.ts"
 import { UsageGraphView } from "./usage-graph.tsx"
@@ -158,13 +157,12 @@ function renderProviders(api: TuiPluginApi, period: ReportPeriod): JSX.Element {
 function renderGraph(api: TuiPluginApi, period: ReportPeriod): JSX.Element {
   const result = computeTimelineSafely(period)
   if (result.kind === "error") return <UsageErrorView api={api} error={result.error} />
-  const rows = buildUsageTimelineModel(result.buckets)
-  if (rows.length === 0) return <UsageEmptyView api={api} periodLabel={periodLabel(period)} />
+  if (result.buckets.length === 0) return <UsageEmptyView api={api} periodLabel={periodLabel(period)} />
   return (
     <UsageGraphView
       api={api}
       periodLabel={periodLabel(period)}
-      rows={rows}
+      buckets={result.buckets}
       onBack={() => showOverview(api, period)}
     />
   )

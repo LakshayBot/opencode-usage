@@ -5,7 +5,7 @@
  * centered, Esc handled by the host). Presents a compact hierarchy:
  *
  *   Summary    Messages / Tokens / Cost   (primary, immediately answerable)
- *   Breakdown  Input / Output / Cache R/W (secondary)
+ *   Breakdown  Input / Output / Reasoning / Cache R/W (secondary)
  *   Views      By model · By provider · History (navigable, native list)
  *
  * Navigation reuses OpenCode's dialog.select keybindings (up/ctrl+p,
@@ -215,6 +215,7 @@ export function UsageOverviewView(props: {
       <box paddingLeft={4} paddingRight={4} gap={1}>
         <MetricRow t={t} label="Input" value={formatTokens(props.overview.inputTokens)} />
         <MetricRow t={t} label="Output" value={formatTokens(props.overview.outputTokens)} />
+        <MetricRow t={t} label="Reasoning" value={formatTokens(props.overview.reasoningTokens)} />
         <MetricRow t={t} label="Cache Read" value={formatTokens(props.overview.cacheReadTokens)} />
         <MetricRow t={t} label="Cache Write" value={formatTokens(props.overview.cacheWriteTokens)} />
         <Show when={props.overview.cacheAvailable}>

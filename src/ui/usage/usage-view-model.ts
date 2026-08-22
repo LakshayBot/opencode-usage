@@ -23,6 +23,7 @@ export interface UsageOverviewModel {
   cost: number | null
   inputTokens: number
   outputTokens: number
+  reasoningTokens: number
   cacheReadTokens: number
   cacheWriteTokens: number
   cacheHitRate: number | null
@@ -45,6 +46,7 @@ export function buildUsageOverview(report: UsageReport): UsageOverviewModel {
     cost,
     inputTokens: report.tokens.input,
     outputTokens: report.tokens.output,
+    reasoningTokens: report.tokens.reasoning,
     cacheReadTokens: report.tokens.cacheRead,
     cacheWriteTokens: report.tokens.cacheWrite,
     cacheHitRate: report.cache.hitRate,
@@ -118,13 +120,21 @@ export function buildUsagePeriodSummaries(reports: UsageReport[]): UsagePeriodSu
   return reports.map(buildPeriodSummary)
 }
 
-// ---- Graph view (tokens over time) -------------------------------------------
+// ---- Graph view (tokens/cost over time) --------------------------------------
 
 /** Target bar width in characters — wide enough to read shape, narrow enough
  *  to fit the popup next to labels and token/cost columns. */
 export const TIMELINE_BAR_WIDTH = 24
 
 const BAR_CHARACTER = "█"
+
+/** What the graph bars scale to: token volume (default) or dollar cost. */
+export type UsageTimelineMetric = "tokens" | "cost"
+
+export interface UsageTimelineOptions {
+  /** Bars scale by this bucket field; defaults to "tokens". */
+  metric?: UsageTimelineMetric
+}
 
 export interface UsageTimelineRowModel {
   label: string
@@ -138,23 +148,40 @@ export interface UsageTimelineRowModel {
 
 /**
  * Render-ready rows for the "Graph" view. The busiest bucket spans the full
- * `TIMELINE_BAR_WIDTH`; every bucket with tokens keeps at least one bar
- * character so activity stays visible, zero buckets render an empty bar.
+ * `TIMELINE_BAR_WIDTH`; every bucket with a positive value keeps at least one
+ * bar character so activity stays visible, zero buckets render an empty bar.
+ *
+ * In "cost" mode bars scale by bucket cost instead of tokens, and buckets with
+ * unknown pricing cannot be placed on that scale at all: they are excluded from
+ * the max computation and render an empty bar with "?" as their cost text
+ * (never "$0.00"). `tokensText` shows the token count in either mode.
  */
-export function buildUsageTimelineModel(buckets: TimelineBucket[]): UsageTimelineRowModel[] {
-  const maxTotal = buckets.reduce((max, bucket) => Math.max(max, bucket.totalTokens), 0)
+export function buildUsageTimelineModel(buckets: TimelineBucket[], options: UsageTimelineOptions = {}): UsageTimelineRowModel[] {
+  if ((options.metric ?? "tokens") === "tokens") {
+    const maxTotal = buckets.reduce((max, bucket) => Math.max(max, bucket.totalTokens), 0)
+    return buckets.map((bucket) => ({
+      label: bucket.label,
+      bar: timelineBar(bucket.totalTokens, maxTotal),
+      totalTokens: bucket.totalTokens,
+      cost: bucket.cost,
+      tokensText: formatTokens(bucket.totalTokens),
+      costText: formatCost(bucket.cost),
+    }))
+  }
+  // Cost mode — unknown-pricing buckets stay invisible to the scale.
+  const maxCost = buckets.reduce((max, bucket) => (bucket.cost !== null && bucket.cost > max ? bucket.cost : max), 0)
   return buckets.map((bucket) => ({
     label: bucket.label,
-    bar: timelineBar(bucket.totalTokens, maxTotal),
+    bar: bucket.cost === null ? "" : timelineBar(bucket.cost, maxCost),
     totalTokens: bucket.totalTokens,
     cost: bucket.cost,
     tokensText: formatTokens(bucket.totalTokens),
-    costText: formatCost(bucket.cost),
+    costText: bucket.cost === null ? "?" : formatCost(bucket.cost),
   }))
 }
 
-function timelineBar(totalTokens: number, maxTotal: number): string {
-  if (totalTokens <= 0 || maxTotal <= 0) return ""
-  const width = Math.max(1, Math.round((totalTokens / maxTotal) * TIMELINE_BAR_WIDTH))
+function timelineBar(value: number, maxValue: number): string {
+  if (value <= 0 || maxValue <= 0) return ""
+  const width = Math.max(1, Math.round((value / maxValue) * TIMELINE_BAR_WIDTH))
   return BAR_CHARACTER.repeat(Math.min(TIMELINE_BAR_WIDTH, width))
 }
