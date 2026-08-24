@@ -150,7 +150,7 @@ export function UsageGraphView(props: {
       <box paddingLeft={4} paddingRight={4}>
         <text fg={t.textMuted}>
           backspace back · ←→ tokens/cost · ↑↓ scroll · esc close
-          <Show when={!model().costKnown}> · cost unknown (no pricing)</Show>
+          <Show when={!model().costKnown}> · costs unknown — try opencode-usage update-pricing</Show>
         </text>
       </box>
     </box>

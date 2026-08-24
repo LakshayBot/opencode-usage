@@ -356,8 +356,9 @@ function hourBucketLabel(startMs: number): string {
  * Compute the tokens-over-time buckets for a period. Mirrors computeReport's
  * event selection exactly (same WHERE logic), then aggregates rows into fixed
  * real-time buckets. Cost per bucket follows the breakdown convention above:
- * recomputed with current pricing, null when ANY contributing event's model
- * has no pricing.
+ * recomputed with current pricing; events without pricing fall back to the
+ * exact at-use cost opencode recorded for the step. A bucket is null only
+ * when ANY contributing event has neither (prices are never invented).
  */
 export function computeUsageTimeline(db: UsageDatabase, period: ReportPeriod, filter: ReportFilter = {}, options: ReportOptions): TimelineBucket[] {
   const now = options.now ?? Date.now()
@@ -452,22 +453,34 @@ export function computeUsageTimeline(db: UsageDatabase, period: ReportPeriod, fi
     bucket.inputTokens += row.input_tokens
     bucket.outputTokens += row.output_tokens
     bucket.totalTokens += row.total_tokens
-    const pricing = options.pricing.getPricing(row.provider ?? "unknown", row.model ?? "unknown", row.timestamp)
-    const calc = CostCalculator.compute(
-      {
-        inputTokens: row.input_tokens,
-        outputTokens: row.output_tokens + row.reasoning_tokens,
-        cacheReadTokens: row.cache_read_tokens,
-        cacheWriteTokens: row.cache_write_tokens,
-      },
-      pricing,
-    )
-    if (calc.unknown || calc.total === null) {
-      bucket.cost = null
-    } else if (bucket.cost !== null) {
-      bucket.cost += calc.total
+      const pricing = options.pricing.getPricing(row.provider ?? "unknown", row.model ?? "unknown", row.timestamp)
+      const calc = CostCalculator.compute(
+        {
+          inputTokens: row.input_tokens,
+          outputTokens: row.output_tokens + row.reasoning_tokens,
+          cacheReadTokens: row.cache_read_tokens,
+          cacheWriteTokens: row.cache_write_tokens,
+        },
+        pricing,
+      )
+      // Cost per event: the recomputed breakdown when current pricing exists,
+      // otherwise the exact at-use cost opencode recorded for the step (the
+      // report's primary cost signal). A bucket is null only when a
+      // contributing event has neither — prices are never invented.
+      let contribution: number | null
+      if (!calc.unknown && calc.total !== null) {
+        contribution = calc.total
+      } else if (row.cost !== null && Number.isFinite(row.cost)) {
+        contribution = row.cost
+      } else {
+        contribution = null
+      }
+      if (contribution === null) {
+        bucket.cost = null
+      } else if (bucket.cost !== null) {
+        bucket.cost += contribution
+      }
     }
-  }
 
   return buckets
 }

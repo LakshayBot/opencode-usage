@@ -31,6 +31,7 @@ interface SeedEvent {
   model?: string
   input?: number
   output?: number
+  cost?: number | null
 }
 
 function seedEvents(dbPath: string, events: SeedEvent[]): void {
@@ -45,7 +46,7 @@ function seedEvents(dbPath: string, events: SeedEvent[]): void {
   for (const e of events) {
     const input = e.input ?? 1000
     const output = e.output ?? 100
-    insert.run(e.key, e.ts, e.session ?? "ses_x", e.provider ?? "anthropic", e.model ?? "claude-sonnet-4-6", input, output, input + output, 0.01)
+    insert.run(e.key, e.ts, e.session ?? "ses_x", e.provider ?? "anthropic", e.model ?? "claude-sonnet-4-6", input, output, input + output, e.cost === undefined ? 0.01 : e.cost)
   }
   db.close()
 }
@@ -132,7 +133,7 @@ describe("computeUsageTimeline", () => {
     }
   })
 
-  it("propagates unknown pricing as null cost per bucket, without leaking into others", () => {
+  it("falls back to the recorded at-use cost when pricing is unknown, without leaking into others", () => {
     const dir = tmpDir()
     try {
       const dbPath = path.join(dir, "usage.db")
@@ -149,11 +150,30 @@ describe("computeUsageTimeline", () => {
       const mixedBucket = bucketContaining(month, mysteryTs)
       assert.equal(typeof knownBucket.cost, "number")
       assert.ok(knownBucket.cost! > 0)
-      // any unknown-pricing event in a bucket makes that bucket's cost null…
-      assert.equal(mixedBucket.cost, null)
-      // …but its tokens still count, and neighbors stay unaffected
+      // unknown-pricing events contribute their recorded at-use cost (0.01)…
+      assert.equal(typeof mixedBucket.cost, "number")
+      assert.ok(mixedBucket.cost! > 0)
+      // …tokens still count, and neighbors stay unaffected
       assert.equal(mixedBucket.totalTokens, 1100 + 1100)
       assert.equal(knownBucket.totalTokens, 1100)
+    } finally {
+      rmrf(dir)
+    }
+  })
+
+  it("bucket cost is null only when an event has neither pricing nor a recorded cost", () => {
+    const dir = tmpDir()
+    try {
+      const dbPath = path.join(dir, "usage.db")
+      const mysteryTs = new Date(2026, 5, 10, 8, 0).getTime()
+      seedEvents(dbPath, [
+        { key: "mystery-no-cost", ts: mysteryTs, provider: "mystery-provider", model: "mystery-model", cost: null },
+      ])
+
+      const month = timelineFor(dbPath, { kind: "month" })
+      const bucket = bucketContaining(month, mysteryTs)
+      assert.equal(bucket.cost, null)
+      assert.equal(bucket.totalTokens, 1100)
     } finally {
       rmrf(dir)
     }
