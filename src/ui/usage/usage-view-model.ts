@@ -7,8 +7,9 @@
  * popup can change freely without affecting tracking, tokens, cache or costs.
  */
 
-import type { TimelineBucket } from "../../reporting/usage-report.ts"
-import type { ModelRow, ProviderRow, ReportPeriod, UsageReport } from "../../types/usage.ts"
+import type { Budgets } from "../../config/budgets.ts"
+import type { PeriodComparison, TimelineBucket } from "../../reporting/usage-report.ts"
+import type { AgentRow, ModelRow, ProjectRow, ProviderRow, ReportPeriod, SessionRow, UsageReport } from "../../types/usage.ts"
 import { formatCost, formatTokens } from "./usage-format.ts"
 
 /** The primary summary shown on the first /usage screen. */
@@ -23,6 +24,7 @@ export interface UsageOverviewModel {
   cost: number | null
   inputTokens: number
   outputTokens: number
+  reasoningTokens: number
   cacheReadTokens: number
   cacheWriteTokens: number
   cacheHitRate: number | null
@@ -45,6 +47,7 @@ export function buildUsageOverview(report: UsageReport): UsageOverviewModel {
     cost,
     inputTokens: report.tokens.input,
     outputTokens: report.tokens.output,
+    reasoningTokens: report.tokens.reasoning,
     cacheReadTokens: report.tokens.cacheRead,
     cacheWriteTokens: report.tokens.cacheWrite,
     cacheHitRate: report.cache.hitRate,
@@ -94,6 +97,75 @@ export function buildUsageProviders(report: UsageReport): UsageProviderRowModel[
   }))
 }
 
+export interface UsageAgentRowModel {
+  agent: string
+  requests: number
+  totalTokens: number
+  inputTokens: number
+  outputTokens: number
+  cost: number | null
+}
+
+export function buildUsageAgents(report: UsageReport): UsageAgentRowModel[] {
+  return report.perAgent.map((row: AgentRow) => ({
+    agent: row.agent,
+    requests: row.requests,
+    totalTokens: row.totalTokens,
+    inputTokens: row.inputTokens,
+    outputTokens: row.outputTokens,
+    cost: row.cost,
+  }))
+}
+
+export interface UsageProjectRowModel {
+  project: string
+  requests: number
+  totalTokens: number
+  inputTokens: number
+  outputTokens: number
+  cost: number | null
+}
+
+export function buildUsageProjects(report: UsageReport): UsageProjectRowModel[] {
+  return report.perProject.map((row: ProjectRow) => ({
+    project: row.project,
+    requests: row.requests,
+    totalTokens: row.totalTokens,
+    inputTokens: row.inputTokens,
+    outputTokens: row.outputTokens,
+    cost: row.cost,
+  }))
+}
+
+export interface UsageSessionRowModel {
+  sessionId: string
+  /** Session title truncated to MAX_TITLE_CHARS (ellipsis included). */
+  displayTitle: string
+  requests: number
+  totalTokens: number
+  cost: number | null
+  lastActivity: number
+}
+
+/** Long session titles must not push the token/cost columns out of the popup. */
+export const MAX_SESSION_TITLE_CHARS = 40
+
+function truncateTitle(title: string): string {
+  if (title.length <= MAX_SESSION_TITLE_CHARS) return title
+  return title.slice(0, MAX_SESSION_TITLE_CHARS - 1) + "…"
+}
+
+export function buildUsageSessions(report: UsageReport): UsageSessionRowModel[] {
+  return report.perSession.map((row: SessionRow) => ({
+    sessionId: row.sessionId,
+    displayTitle: truncateTitle(row.title),
+    requests: row.requests,
+    totalTokens: row.totalTokens,
+    cost: row.cost,
+    lastActivity: row.lastActivity,
+  }))
+}
+
 export interface UsagePeriodSummary {
   period: ReportPeriod
   label: string
@@ -118,13 +190,21 @@ export function buildUsagePeriodSummaries(reports: UsageReport[]): UsagePeriodSu
   return reports.map(buildPeriodSummary)
 }
 
-// ---- Graph view (tokens over time) -------------------------------------------
+// ---- Graph view (tokens/cost over time) --------------------------------------
 
 /** Target bar width in characters — wide enough to read shape, narrow enough
  *  to fit the popup next to labels and token/cost columns. */
 export const TIMELINE_BAR_WIDTH = 24
 
 const BAR_CHARACTER = "█"
+
+/** What the graph bars scale to: token volume (default) or dollar cost. */
+export type UsageTimelineMetric = "tokens" | "cost"
+
+export interface UsageTimelineOptions {
+  /** Bars scale by this bucket field; defaults to "tokens". */
+  metric?: UsageTimelineMetric
+}
 
 export interface UsageTimelineRowModel {
   label: string
@@ -138,23 +218,118 @@ export interface UsageTimelineRowModel {
 
 /**
  * Render-ready rows for the "Graph" view. The busiest bucket spans the full
- * `TIMELINE_BAR_WIDTH`; every bucket with tokens keeps at least one bar
- * character so activity stays visible, zero buckets render an empty bar.
+ * `TIMELINE_BAR_WIDTH`; every bucket with a positive value keeps at least one
+ * bar character so activity stays visible, zero buckets render an empty bar.
+ *
+ * In "cost" mode bars scale by bucket cost instead of tokens, and buckets with
+ * unknown pricing cannot be placed on that scale at all: they are excluded from
+ * the max computation and render an empty bar with "?" as their cost text
+ * (never "$0.00"). `tokensText` shows the token count in either mode.
  */
-export function buildUsageTimelineModel(buckets: TimelineBucket[]): UsageTimelineRowModel[] {
-  const maxTotal = buckets.reduce((max, bucket) => Math.max(max, bucket.totalTokens), 0)
+export function buildUsageTimelineModel(buckets: TimelineBucket[], options: UsageTimelineOptions = {}): UsageTimelineRowModel[] {
+  if ((options.metric ?? "tokens") === "tokens") {
+    const maxTotal = buckets.reduce((max, bucket) => Math.max(max, bucket.totalTokens), 0)
+    return buckets.map((bucket) => ({
+      label: bucket.label,
+      bar: timelineBar(bucket.totalTokens, maxTotal),
+      totalTokens: bucket.totalTokens,
+      cost: bucket.cost,
+      tokensText: formatTokens(bucket.totalTokens),
+      costText: formatCost(bucket.cost),
+    }))
+  }
+  // Cost mode — unknown-pricing buckets stay invisible to the scale.
+  const maxCost = buckets.reduce((max, bucket) => (bucket.cost !== null && bucket.cost > max ? bucket.cost : max), 0)
   return buckets.map((bucket) => ({
     label: bucket.label,
-    bar: timelineBar(bucket.totalTokens, maxTotal),
+    bar: bucket.cost === null ? "" : timelineBar(bucket.cost, maxCost),
     totalTokens: bucket.totalTokens,
     cost: bucket.cost,
     tokensText: formatTokens(bucket.totalTokens),
-    costText: formatCost(bucket.cost),
+    costText: bucket.cost === null ? "?" : formatCost(bucket.cost),
   }))
 }
 
-function timelineBar(totalTokens: number, maxTotal: number): string {
-  if (totalTokens <= 0 || maxTotal <= 0) return ""
-  const width = Math.max(1, Math.round((totalTokens / maxTotal) * TIMELINE_BAR_WIDTH))
+function timelineBar(value: number, maxValue: number): string {
+  if (value <= 0 || maxValue <= 0) return ""
+  const width = Math.max(1, Math.round((value / maxValue) * TIMELINE_BAR_WIDTH))
   return BAR_CHARACTER.repeat(Math.min(TIMELINE_BAR_WIDTH, width))
+}
+
+// ---- period comparison ("vs prev" line on the overview) ----------------------
+
+export interface UsageComparisonModel {
+  /** False -> the overview hides the block entirely ('session'/'all'). */
+  available: boolean
+  /** Complete compact line, ready to render muted under the tabs. */
+  text: string
+  requestsText: string
+  totalTokensText: string
+  costText: string
+}
+
+/** '+34%' (up), '-12%' (down), 'new' (nothing before) or '—' (not comparable). */
+function comparisonMetricText(pct: number | null, previous: number | null, current: number | null): string {
+  if (pct !== null) return `${pct < 0 ? "-" : "+"}${Math.abs(pct)}%`
+  if (previous === 0 && (current ?? 0) > 0) return "new"
+  return "—"
+}
+
+export function buildComparisonModel(cmp: PeriodComparison): UsageComparisonModel {
+  const requestsText = comparisonMetricText(cmp.delta.requestsPct, cmp.previous.requests, cmp.current.requests)
+  const totalTokensText = comparisonMetricText(cmp.delta.totalTokensPct, cmp.previous.totalTokens, cmp.current.totalTokens)
+  const costText = comparisonMetricText(cmp.delta.costPct, cmp.previous.cost, cmp.current.cost)
+  return {
+    available: cmp.available,
+    text: cmp.available ? `vs prev ${cmp.label}: req ${requestsText} · tok ${totalTokensText} · cost ${costText}` : "",
+    requestsText,
+    totalTokensText,
+    costText,
+  }
+}
+
+// ---- budgets (spend vs configured limits) ------------------------------------
+
+export type BudgetLineLevel = "ok" | "warn" | "over"
+
+export interface BudgetLineModel {
+  label: "Daily" | "Monthly"
+  /** Ready-to-render line, e.g. '$2.10 of $5.00 (42%)'. Unknown spend renders
+   *  as 'unknown of $5.00' — the leading 'unknown' is the renderer's cue for
+   *  distinct muted styling. */
+  text: string
+  level: BudgetLineLevel
+}
+
+export interface UsageBudgetModel {
+  /** False -> the overview hides the block entirely (no budgets configured). */
+  visible: boolean
+  lines: BudgetLineModel[]
+}
+
+/** Integer percent thresholds; Math.round absorbs float noise in warnAt*100. */
+function budgetLine(label: "Daily" | "Monthly", budget: number, spend: number | null, warnAt: number): BudgetLineModel {
+  if (spend === null) {
+    return { label, text: `unknown of ${formatCost(budget)}`, level: "ok" }
+  }
+  // budget 0 with positive spend can't be expressed as a percent — it is over.
+  const ratio = budget > 0 ? spend / budget : spend > 0 ? Number.POSITIVE_INFINITY : 0
+  const pct = Number.isFinite(ratio) ? Math.round(ratio * 100) : null
+  const level: BudgetLineLevel = pct === null || pct >= 100 ? "over" : pct >= Math.round(warnAt * 100) ? "warn" : "ok"
+  return { label, text: `${formatCost(spend)} of ${formatCost(budget)} (${pct ?? ">100"}%)`, level }
+}
+
+/**
+ * Render-ready budget lines for the overview, one per configured window
+ * ('Daily' first). Hidden entirely when no budgets are configured; a null
+ * spend (unknown-cost event in the window) keeps the line visible but muted.
+ */
+export function buildBudgetModel(budgets: Budgets | null, spendDaily: number | null, spendMonthly: number | null): UsageBudgetModel {
+  if (!budgets || (budgets.daily === null && budgets.monthly === null)) {
+    return { visible: false, lines: [] }
+  }
+  const lines: BudgetLineModel[] = []
+  if (budgets.daily !== null) lines.push(budgetLine("Daily", budgets.daily, spendDaily, budgets.warnAt))
+  if (budgets.monthly !== null) lines.push(budgetLine("Monthly", budgets.monthly, spendMonthly, budgets.warnAt))
+  return { visible: true, lines }
 }

@@ -3,7 +3,7 @@ import assert from "node:assert/strict"
 import path from "node:path"
 import { tmpDir, rmrf, seedUsageEvents } from "./helpers.ts"
 import { UsageDatabase } from "../src/storage/database.ts"
-import { computeReport, periodRange, periodLabel } from "../src/reporting/usage-report.ts"
+import { buildComparison, computeReport, periodRange, periodLabel, type PeriodComparison } from "../src/reporting/usage-report.ts"
 import { HybridPricingProvider } from "../src/pricing/modelsdev.ts"
 import { renderReportMarkdown, formatTokens, formatCost } from "../src/reporting/formatters/markdown.ts"
 import type { UsageReport } from "../src/types/usage.ts"
@@ -164,6 +164,457 @@ describe("computeReport", () => {
     assert.equal(byModel.perModel[0]!.provider, "openai")
     db.close()
     rmrf(path.dirname(dbPath))
+  })
+})
+
+describe("computeReport per-agent / per-project grouping", () => {
+  const now = Date.now()
+
+  interface SeedRow {
+    key: string
+    agent?: string | null
+    project?: string | null
+    parent?: string | null
+    tokens?: number
+    cost?: number | null
+    ts?: number
+  }
+
+  function seed(dbPath: string, rows: SeedRow[]): void {
+    const db = UsageDatabase.open(dbPath)
+    const insert = db.raw.prepare(
+      `INSERT INTO usage_events (
+         event_key, timestamp, session_id, agent, project_id, parent_session_id, provider, model,
+         input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, total_tokens, cost, provider_reported_cache
+       ) VALUES (?, ?, 'ses_grp', ?, ?, ?, 'anthropic', 'claude-sonnet-4-6', ?, ?, 0, 0, ?, ?, 0)`,
+    )
+    for (const r of rows) {
+      const tokens = r.tokens ?? 100
+      insert.run(r.key, r.ts ?? now - 60_000, r.agent ?? null, r.project ?? null, r.parent ?? null, tokens / 2, tokens / 2, tokens, r.cost === undefined ? 0.01 : r.cost)
+    }
+    db.close()
+  }
+
+  function reportFor(dbPath: string, period: Parameters<typeof computeReport>[1]): UsageReport {
+    const db = UsageDatabase.open(dbPath, { readOnly: true })
+    try {
+      return computeReport(db, period, {}, { pricing: new HybridPricingProvider(db), now })
+    } finally {
+      db.close()
+    }
+  }
+
+  it("groups by agent and folds null agent into 'main', consistent with counts.mainAgentRequests", () => {
+    const dir = tmpDir()
+    try {
+      const dbPath = path.join(dir, "usage.db")
+      seed(dbPath, [
+        { key: "a1", agent: "build", project: "proj_a", tokens: 200, cost: 0.04 },
+        { key: "a2", agent: null, project: null, tokens: 100, cost: 0.02 },
+        { key: "a3", agent: "explore", project: "proj_b", parent: "ses_grp", tokens: 50, cost: null },
+      ])
+      const report = reportFor(dbPath, { kind: "all" })
+      // null agent counts as main in counts — perAgent uses the same convention
+      assert.equal(report.counts.mainAgentRequests, 2)
+      assert.deepEqual(
+        report.perAgent.map((row) => [row.agent, row.requests, row.totalTokens, row.cost]),
+        [
+          ["build", 1, 200, 0.04],
+          ["main", 1, 100, 0.02],
+          ["explore", 1, 50, null],
+        ],
+      )
+    } finally {
+      rmrf(dir)
+    }
+  })
+
+  it("groups by project and labels null project_id '(no project)'", () => {
+    const dir = tmpDir()
+    try {
+      const dbPath = path.join(dir, "usage.db")
+      seed(dbPath, [
+        { key: "p1", project: "proj_big", agent: "build", tokens: 800, cost: 0.01 },
+        { key: "p2", project: "proj_small", agent: "build", tokens: 10, cost: 0.09 },
+        { key: "p3", project: null, agent: "build", tokens: 5, cost: 0.001 },
+        { key: "p4", project: null, agent: "explore", parent: "ses_grp", tokens: 7, cost: null },
+      ])
+      const report = reportFor(dbPath, { kind: "all" })
+      // '(no project)' merges p3+p4; cost sums only known-cost events
+      assert.deepEqual(
+        report.perProject.map((row) => [row.project, row.requests, row.totalTokens, row.cost]),
+        [
+          ["proj_small", 1, 10, 0.09],
+          ["proj_big", 1, 800, 0.01],
+          ["(no project)", 2, 12, 0.001],
+        ],
+      )
+      // input/output split is preserved alongside the totals
+      assert.deepEqual(report.perProject[2]!.inputTokens + report.perProject[2]!.outputTokens, 12)
+    } finally {
+      rmrf(dir)
+    }
+  })
+
+  it("sorts cost desc then totalTokens desc, unknown cost last", () => {
+    const dir = tmpDir()
+    try {
+      const dbPath = path.join(dir, "usage.db")
+      seed(dbPath, [
+        { key: "s1", agent: "spendy", tokens: 150, cost: 0.03 },
+        { key: "s2", agent: "spendy", tokens: 150, cost: 0.03 },
+        { key: "c1", agent: "cheap", tokens: 450, cost: 0.01 },
+        { key: "c2", agent: "cheap", tokens: 450, cost: 0.005 },
+        { key: "f1", agent: "free", tokens: 5000, cost: null },
+        { key: "t1", agent: "tie-a", tokens: 100, cost: 0.02 },
+        { key: "t2", agent: "tie-b", tokens: 400, cost: 0.02 },
+      ])
+      const report = reportFor(dbPath, { kind: "all" })
+      assert.deepEqual(
+        report.perAgent.map((row) => row.agent),
+        ["spendy", "tie-b", "tie-a", "cheap", "free"],
+      )
+      // multi-event groups aggregate requests/tokens/cost
+      const spendy = report.perAgent[0]!
+      assert.equal(spendy.requests, 2)
+      assert.equal(spendy.totalTokens, 300)
+      assert.ok(Math.abs(spendy.cost! - 0.06) < 1e-12)
+      // same rules govern the project ordering (all events share one project here)
+      assert.deepEqual(
+        report.perProject.map((row) => row.project),
+        ["(no project)"],
+      )
+      assert.equal(report.perProject[0]!.requests, 7)
+    } finally {
+      rmrf(dir)
+    }
+  })
+
+  it("empty period yields empty perAgent/perProject arrays", () => {
+    const dir = tmpDir()
+    try {
+      const dbPath = path.join(dir, "usage.db")
+      seed(dbPath, [{ key: "old", agent: "build", project: "proj_old", tokens: 10, ts: now - 40 * 24 * 3600_000 }])
+      const report = reportFor(dbPath, { kind: "today" })
+      assert.deepEqual(report.perAgent, [])
+      assert.deepEqual(report.perProject, [])
+      assert.equal(report.counts.modelRequests, 0)
+      rmrf(path.dirname(dbPath))
+    } finally {
+      rmrf(dir)
+    }
+  })
+})
+
+describe("computeReport per-session grouping", () => {
+  const now = Date.now()
+
+  interface SeedRow {
+    key: string
+    session: string
+    tokens?: number
+    cost?: number | null
+    ts?: number
+  }
+
+  function seed(dbPath: string, rows: SeedRow[], sessionTitles: Record<string, string> = {}): void {
+    const db = UsageDatabase.open(dbPath)
+    const insertEvent = db.raw.prepare(
+      `INSERT INTO usage_events (
+         event_key, timestamp, session_id, provider, model,
+         input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, total_tokens, cost, provider_reported_cache
+       ) VALUES (?, ?, ?, 'anthropic', 'claude-sonnet-4-6', ?, 0, 0, 0, ?, ?, 0)`,
+    )
+    for (const r of rows) {
+      const tokens = r.tokens ?? 100
+      insertEvent.run(r.key, r.ts ?? now - 60_000, r.session, tokens, tokens, r.cost === undefined ? 0.01 : r.cost)
+    }
+    const upsert = db.raw.prepare(
+      `INSERT INTO sessions (id, project_id, parent_id, agent, title, created, updated)
+       VALUES (?, NULL, NULL, NULL, ?, ?, ?)`,
+    )
+    for (const [id, title] of Object.entries(sessionTitles)) {
+      upsert.run(id, title, now - 3600_000, now)
+    }
+    db.close()
+  }
+
+  function reportFor(dbPath: string, period: Parameters<typeof computeReport>[1]): UsageReport {
+    const db = UsageDatabase.open(dbPath, { readOnly: true })
+    try {
+      return computeReport(db, period, {}, { pricing: new HybridPricingProvider(db), now })
+    } finally {
+      db.close()
+    }
+  }
+
+  it("groups events per session and LEFT JOINs titles, '(untitled)' when the session row is missing", () => {
+    const dir = tmpDir()
+    try {
+      const dbPath = path.join(dir, "usage.db")
+      seed(
+        dbPath,
+        [
+          { key: "e1", session: "ses_titled", tokens: 200, cost: 0.04, ts: now - 120_000 },
+          { key: "e2", session: "ses_titled", tokens: 100, cost: null, ts: now - 60_000 },
+          { key: "e3", session: "ses_ghost", tokens: 50, cost: 0.02 },
+        ],
+        { ses_titled: "Fix login bug" },
+      )
+      const report = reportFor(dbPath, { kind: "all" })
+      assert.deepEqual(
+        report.perSession.map((row) => [row.sessionId, row.title]),
+        [
+          ["ses_titled", "Fix login bug"],
+          ["ses_ghost", "(untitled)"],
+        ],
+      )
+      // aggregation across a session's events; cost sums known costs only
+      const titled = report.perSession[0]!
+      assert.equal(titled.requests, 2)
+      assert.equal(titled.totalTokens, 300)
+      assert.ok(Math.abs(titled.cost! - 0.04) < 1e-12)
+      assert.equal(titled.lastActivity, now - 60_000)
+      assert.equal(report.perSession[1]!.requests, 1)
+    } finally {
+      rmrf(dir)
+    }
+  })
+
+  it("sorts cost desc (unknown last), ties broken by tokens desc — mirroring perAgent/perProject", () => {
+    const dir = tmpDir()
+    try {
+      const dbPath = path.join(dir, "usage.db")
+      seed(dbPath, [
+        { key: "s1", session: "spendy", tokens: 300, cost: 0.03 },
+        { key: "c1", session: "cheap", tokens: 450, cost: 0.01 },
+        { key: "f1", session: "free", tokens: 5000, cost: null },
+        { key: "t1", session: "tie-a", tokens: 100, cost: 0.02 },
+        { key: "t2", session: "tie-b", tokens: 400, cost: 0.02 },
+      ])
+      const report = reportFor(dbPath, { kind: "all" })
+      assert.deepEqual(
+        report.perSession.map((row) => row.sessionId),
+        ["spendy", "tie-b", "tie-a", "cheap", "free"],
+      )
+    } finally {
+      rmrf(dir)
+    }
+  })
+
+  it("caps at 50 rows, keeping the top-spend sessions", () => {
+    const dir = tmpDir()
+    try {
+      const dbPath = path.join(dir, "usage.db")
+      const rows: SeedRow[] = []
+      const titles: Record<string, string> = {}
+      for (let i = 0; i < 55; i++) {
+        rows.push({ key: `k${i}`, session: `s${i}`, tokens: 100 + i, cost: (i + 1) / 10_000 })
+        titles[`s${i}`] = `session ${i}`
+      }
+      seed(dbPath, rows, titles)
+      const report = reportFor(dbPath, { kind: "all" })
+      assert.equal(report.perSession.length, 50)
+      assert.equal(report.perSession[0]!.sessionId, "s54")
+      assert.equal(report.perSession[49]!.sessionId, "s5")
+      assert.equal(report.counts.modelRequests, 55)
+    } finally {
+      rmrf(dir)
+    }
+  })
+
+  it("respects the period window and yields an empty array with no events", () => {
+    const dir = tmpDir()
+    try {
+      const dbPath = path.join(dir, "usage.db")
+      seed(dbPath, [
+        { key: "fresh", session: "ses_now", tokens: 10, ts: now - 60_000 },
+        { key: "stale", session: "ses_old", tokens: 20, ts: now - 40 * 24 * 3600_000 },
+      ])
+      assert.deepEqual(reportFor(dbPath, { kind: "today" }).perSession.map((row) => row.sessionId), ["ses_now"])
+      assert.deepEqual(reportFor(dbPath, { kind: "week" }).perSession.map((row) => row.sessionId), ["ses_now"])
+      const emptyDb = path.join(dir, "empty.db")
+      seed(emptyDb, [])
+      assert.deepEqual(reportFor(emptyDb, { kind: "all" }).perSession, [])
+    } finally {
+      rmrf(dir)
+    }
+  })
+})
+
+describe("buildComparison", () => {
+  // Fixed clock: Wed Jul 15 2026, 12:00 local. Windows are fully deterministic:
+  //   month: current [Jun 15 12:00, open), previous [May 16 12:00, Jun 15 12:00)
+  //   week:  current [Jul 08 12:00, open), previous [Jul 01 12:00, Jul 08 12:00)
+  //   today: current [Jul 15 00:00, open), previous [Jul 14 12:00, Jul 15 00:00)
+  const NOW = new Date(2026, 6, 15, 12, 0, 0, 0).getTime()
+  const DAY_MS = 24 * 3600_000
+
+  function seed(dbPath: string, events: Array<{ key: string; ts: number; tokens?: number; cost?: number | null }>): void {
+    const db = UsageDatabase.open(dbPath)
+    const insert = db.raw.prepare(
+      `INSERT INTO usage_events (
+         event_key, timestamp, session_id, provider, model,
+         input_tokens, output_tokens, cache_read_tokens, cache_write_tokens,
+         total_tokens, cost, provider_reported_cache
+       ) VALUES (?, ?, 'ses_cmp', 'anthropic', 'claude-sonnet-4-6', ?, 0, 0, 0, ?, ?, 0)`,
+    )
+    for (const e of events) {
+      const tokens = e.tokens ?? 100
+      insert.run(e.key, e.ts, tokens / 2, tokens, e.cost === undefined ? 0.01 : e.cost)
+    }
+    db.close()
+  }
+
+  function comparisonFor(dbPath: string, period: Parameters<typeof buildComparison>[1]): PeriodComparison {
+    const db = UsageDatabase.open(dbPath, { readOnly: true })
+    try {
+      return buildComparison(db, period, {}, { pricing: new HybridPricingProvider(db), now: NOW })
+    } finally {
+      db.close()
+    }
+  }
+
+  it("splits month windows at the exact boundary across a calendar-month edge", () => {
+    const dir = tmpDir()
+    try {
+      const dbPath = path.join(dir, "usage.db")
+      seed(dbPath, [
+        { key: "p1-prev-start-edge", ts: NOW - 60 * DAY_MS }, // exactly May 16 12:00 -> previous only
+        { key: "p2-jun1", ts: new Date(2026, 5, 1, 9, 0).getTime() },
+        { key: "p3-jun10", ts: new Date(2026, 5, 10, 10, 30).getTime() },
+        { key: "p4-before-boundary", ts: NOW - 30 * DAY_MS - 3600_000 }, // Jun 15 11:00 -> previous
+        { key: "b-boundary", ts: NOW - 30 * DAY_MS }, // exactly Jun 15 12:00 -> CURRENT only, never previous
+        { key: "c-jul1", ts: new Date(2026, 6, 1, 8, 0).getTime() },
+        { key: "c-now", ts: NOW },
+      ])
+      // default tokens=100/cost=0.01 each: current 3x100, previous 4x100
+      const cmp = comparisonFor(dbPath, { kind: "month" })
+      assert.equal(cmp.available, true)
+      assert.equal(cmp.label, "Last 30 Days")
+      assert.deepEqual(cmp.current, { requests: 3, totalTokens: 300, cost: 0.03 })
+      assert.deepEqual(cmp.previous, { requests: 4, totalTokens: 400, cost: 0.04 })
+      assert.equal(cmp.delta.requestsPct, -25)
+      assert.equal(cmp.delta.totalTokensPct, -25)
+      assert.equal(cmp.delta.costPct, -25)
+    } finally {
+      rmrf(dir)
+    }
+  })
+
+  it("week compares the identical 7-day window immediately before", () => {
+    const dir = tmpDir()
+    try {
+      const dbPath = path.join(dir, "usage.db")
+      seed(dbPath, [
+        // inside the previous week window [Jul 01 12:00, Jul 08 12:00)
+        { key: "prev-week", ts: new Date(2026, 6, 3, 9, 0).getTime(), tokens: 500, cost: 0.05 },
+        // Jul 01 08:00 is BEFORE the previous window starts -> in neither week window
+        { key: "before-prev-week", ts: new Date(2026, 6, 1, 8, 0).getTime() },
+        // current week
+        { key: "cur-week", ts: NOW - 2 * DAY_MS, tokens: 250, cost: 0.02 },
+        { key: "cur-now", ts: NOW },
+      ])
+      const cmp = comparisonFor(dbPath, { kind: "week" })
+      assert.equal(cmp.available, true)
+      assert.equal(cmp.label, "Last 7 Days")
+      assert.equal(cmp.current.requests, 2)
+      assert.equal(cmp.current.totalTokens, 350)
+      assert.equal(cmp.previous.requests, 1)
+      assert.equal(cmp.previous.totalTokens, 500)
+      assert.equal(cmp.delta.totalTokensPct, -30)
+    } finally {
+      rmrf(dir)
+    }
+  })
+
+  it("today compares the same elapsed length before midnight", () => {
+    const dir = tmpDir()
+    try {
+      const dbPath = path.join(dir, "usage.db")
+      seed(dbPath, [
+        // yesterday 18:00 is inside [Jul 14 12:00, Jul 15 00:00)
+        { key: "yesterday-evening", ts: new Date(2026, 6, 14, 18, 0).getTime(), tokens: 400, cost: 0.04 },
+        // yesterday morning falls outside that window
+        { key: "yesterday-morning", ts: new Date(2026, 6, 14, 8, 0).getTime() },
+        { key: "today-now", ts: NOW, tokens: 100, cost: 0.01 },
+      ])
+      const cmp = comparisonFor(dbPath, { kind: "today" })
+      assert.equal(cmp.available, true)
+      assert.deepEqual(cmp.current, { requests: 1, totalTokens: 100, cost: 0.01 })
+      assert.deepEqual(cmp.previous, { requests: 1, totalTokens: 400, cost: 0.04 })
+      assert.equal(cmp.delta.requestsPct, 0)
+      assert.equal(cmp.delta.totalTokensPct, -75)
+      assert.equal(cmp.delta.costPct, -75)
+    } finally {
+      rmrf(dir)
+    }
+  })
+
+  it("is unavailable with zeroed fields for session and all periods", () => {
+    const dir = tmpDir()
+    try {
+      const dbPath = path.join(dir, "usage.db")
+      seed(dbPath, [{ key: "e1", ts: NOW }])
+      for (const period of [{ kind: "session", sessionId: "ses_cmp" }, { kind: "all" }] as const) {
+        const cmp = comparisonFor(dbPath, period)
+        assert.equal(cmp.available, false)
+        assert.deepEqual(cmp.current, { requests: 0, totalTokens: 0, cost: 0 })
+        assert.deepEqual(cmp.previous, { requests: 0, totalTokens: 0, cost: 0 })
+        assert.deepEqual(cmp.delta, { requestsPct: null, totalTokensPct: null, costPct: null })
+      }
+    } finally {
+      rmrf(dir)
+    }
+  })
+
+  it("delta null rules: both empty, brand-new usage, and decline-to-zero", () => {
+    const dir = tmpDir()
+    try {
+      const dbPath = path.join(dir, "usage.db")
+      // no events at all -> both windows empty -> every pct null
+      seed(dbPath, [])
+      const empty = comparisonFor(dbPath, { kind: "today" })
+      assert.equal(empty.available, true)
+      assert.deepEqual(empty.delta, { requestsPct: null, totalTokensPct: null, costPct: null })
+
+      // events only in the current window -> prev == 0 && cur > 0 -> still null ('new' in UI)
+      seed(dbPath, [{ key: "only-now", ts: NOW, tokens: 300, cost: 0.03 }])
+      const fresh = comparisonFor(dbPath, { kind: "today" })
+      assert.equal(fresh.delta.requestsPct, null)
+      assert.equal(fresh.delta.totalTokensPct, null)
+
+      // events only in the previous window -> decline to zero is a real number (-100)
+      const older = path.join(dir, "older.db")
+      seed(older, [{ key: "only-prev", ts: NOW - 60 * DAY_MS, tokens: 300 }])
+      const declined = comparisonFor(older, { kind: "month" })
+      assert.equal(declined.current.requests, 0)
+      assert.equal(declined.delta.requestsPct, -100)
+      assert.equal(declined.delta.totalTokensPct, -100)
+    } finally {
+      rmrf(dir)
+    }
+  })
+
+  it("rounds pcts to integers and nulls cost when either side has unknown costs", () => {
+    const dir = tmpDir()
+    try {
+      const dbPath = path.join(dir, "usage.db")
+      seed(dbPath, [
+        { key: "prev", ts: NOW - 60 * DAY_MS + 3600_000, tokens: 300, cost: 0.02 },
+        { key: "cur-rounding", ts: NOW - 29 * DAY_MS, tokens: 400, cost: null },
+      ])
+      const cmp = comparisonFor(dbPath, { kind: "month" })
+      // (400-300)/300*100 = 33.33 -> 33
+      assert.equal(cmp.delta.totalTokensPct, 33)
+      assert.equal(cmp.delta.requestsPct, 0)
+      // any unknown-cost event makes its whole window's cost unknown -> not comparable
+      assert.equal(cmp.current.cost, null)
+      assert.equal(cmp.previous.cost, 0.02)
+      assert.equal(cmp.delta.costPct, null)
+    } finally {
+      rmrf(dir)
+    }
   })
 })
 

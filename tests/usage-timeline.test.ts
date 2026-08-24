@@ -181,6 +181,39 @@ describe("computeUsageTimeline", () => {
     }
   })
 
+  it("maxBuckets: null lifts the 'all' display cap (data exports need full history)", () => {
+    const dir = tmpDir()
+    try {
+      const dbPath = path.join(dir, "usage.db")
+      // one event per day for 40 days, ending today
+      seedEvents(
+        dbPath,
+        Array.from({ length: 40 }, (_, i) => ({
+          key: `d${i}`,
+          ts: new Date(2026, 4, 7 + i, 12, 0).getTime(), // May 7 .. Jun 15
+        })),
+      )
+
+      // default keeps the TUI's 30-bucket cap …
+      assert.equal(timelineFor(dbPath, { kind: "all" }).length, 30)
+
+      // … while maxBuckets: null spans every day back to the first event
+      const db = UsageDatabase.open(dbPath, { readOnly: true })
+      try {
+        const unbounded = computeUsageTimeline(db, { kind: "all" }, {}, { pricing: new HybridPricingProvider(db), now: NOW, maxBuckets: null })
+        assert.equal(unbounded.length, 40)
+        assert.equal(unbounded[0]!.start, new Date(2026, 4, 7).getTime())
+        assert.equal(unbounded[39]!.label, "Mon 15")
+        assert.equal(unbounded.filter((b) => b.totalTokens > 0).length, 40)
+        assert.equal(sumTokens(unbounded), 40 * 1100)
+      } finally {
+        db.close()
+      }
+    } finally {
+      rmrf(dir)
+    }
+  })
+
   it("buckets the current session hourly across its own span", () => {
     const dir = tmpDir()
     try {
@@ -235,5 +268,42 @@ describe("buildUsageTimelineModel", () => {
 
   it("maps no buckets to no rows", () => {
     assert.deepEqual(buildUsageTimelineModel([]), [])
+  })
+
+  it("cost mode scales bars by bucket cost, max-cost bucket full width", () => {
+    // cost order is the inverse of token order, proving bars track cost
+    const rows = buildUsageTimelineModel([bucket(400, 2), bucket(800, 1), bucket(0, 0)], { metric: "cost" })
+    assert.equal(rows[0]!.bar, "█".repeat(TIMELINE_BAR_WIDTH)) // max-cost bucket -> full width
+    assert.equal(rows[1]!.bar, "█".repeat(TIMELINE_BAR_WIDTH / 2))
+    assert.equal(rows[2]!.bar, "") // zero-cost bucket -> empty bar
+    // the token column is untouched by the mode switch
+    assert.equal(rows[0]!.tokensText, "400")
+  })
+
+  it("cost mode excludes unknown-cost buckets from the scale and renders '?'", () => {
+    const rows = buildUsageTimelineModel([bucket(900, null), bucket(200, 4), bucket(50, 1)], { metric: "cost" })
+    assert.equal(rows[0]!.bar, "")
+    assert.equal(rows[0]!.costText, "?") // never "$0.00" or "Unknown"
+    assert.equal(rows[0]!.tokensText, "900")
+    // known costs scale among themselves (max = 4), as if the null bucket were absent
+    assert.equal(rows[1]!.bar, "█".repeat(TIMELINE_BAR_WIDTH))
+    assert.equal(rows[2]!.bar, "█".repeat(TIMELINE_BAR_WIDTH / 4))
+  })
+
+  it("cost mode renders every bar empty with '?' when no bucket has pricing", () => {
+    const rows = buildUsageTimelineModel([bucket(100, null), bucket(200, null)], { metric: "cost" })
+    for (const row of rows) {
+      assert.equal(row.bar, "")
+      assert.equal(row.costText, "?")
+    }
+  })
+
+  it("defaults to token scaling regardless of cost values", () => {
+    const buckets = [bucket(400, 9), bucket(800, 0.01)]
+    assert.deepEqual(buildUsageTimelineModel(buckets), buildUsageTimelineModel(buckets, { metric: "tokens" }))
+    const rows = buildUsageTimelineModel(buckets)
+    assert.equal(rows[0]!.bar, "█".repeat(TIMELINE_BAR_WIDTH / 2)) // scaled by tokens, not the $9 cost
+    assert.equal(rows[1]!.bar, "█".repeat(TIMELINE_BAR_WIDTH))
+    assert.equal(rows[0]!.costText, "$9.00")
   })
 })

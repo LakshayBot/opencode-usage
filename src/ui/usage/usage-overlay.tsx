@@ -12,23 +12,43 @@
 
 import type { JSX } from "solid-js"
 import type { TuiPluginApi } from "@opencode-ai/plugin/tui"
+import { budgetsConfigDir, loadBudgets } from "../../config/budgets.ts"
 import { resolvePaths } from "../../opencode/paths.ts"
 import { HybridPricingProvider } from "../../pricing/modelsdev.ts"
-import { computeReport, computeUsageTimeline, periodLabel, type TimelineBucket } from "../../reporting/usage-report.ts"
+import {
+  buildComparison,
+  computeReport,
+  computeUsageTimeline,
+  periodLabel,
+  spendSince,
+  startOfLocalDay,
+  startOfLocalMonth,
+  type PeriodComparison,
+  type TimelineBucket,
+} from "../../reporting/usage-report.ts"
 import { UsageDatabase } from "../../storage/database.ts"
 import type { ReportFilter, ReportPeriod, UsageReport } from "../../types/usage.ts"
 import { formatNumber } from "./usage-format.ts"
 import { UsageEmptyView, UsageErrorView } from "./usage-view.tsx"
 import {
+  buildBudgetModel,
+  buildComparisonModel,
+  buildUsageAgents,
   buildUsageModels,
   buildUsageOverview,
   buildUsagePeriodSummaries,
+  buildUsageProjects,
   buildUsageProviders,
-  buildUsageTimelineModel,
+  buildUsageSessions,
+  type UsageBudgetModel,
   type UsageModelRowModel,
+  type UsageTimelineMetric,
 } from "./usage-view-model.ts"
+import { UsageAgentsDialog } from "./usage-agents.tsx"
 import { UsageGraphView } from "./usage-graph.tsx"
 import { UsageOverviewView, type OverviewAction } from "./usage-overview.tsx"
+import { UsageProjectsDialog } from "./usage-projects.tsx"
+import { UsageSessionsDialog } from "./usage-sessions.tsx"
 import {
   UsageHistoryDialog,
   UsageModelDetailView,
@@ -36,7 +56,7 @@ import {
   UsageProvidersDialog,
 } from "./usage-views.tsx"
 
-type ReportResult = { kind: "ok"; report: UsageReport } | { kind: "error"; error: string }
+type ReportResult = { kind: "ok"; report: UsageReport; comparison: PeriodComparison; budget: UsageBudgetModel } | { kind: "error"; error: string }
 
 /** Open /usage for the given period. */
 export function openUsage(api: TuiPluginApi, period: ReportPeriod): void {
@@ -58,9 +78,30 @@ export function showProviders(api: TuiPluginApi, period: ReportPeriod): void {
   api.ui.dialog.replace(() => renderProviders(api, period), undefined)
 }
 
-export function showGraph(api: TuiPluginApi, period: ReportPeriod): void {
+export function showAgents(api: TuiPluginApi, period: ReportPeriod): void {
   api.ui.dialog.setSize("large")
-  api.ui.dialog.replace(() => renderGraph(api, period), undefined)
+  api.ui.dialog.replace(() => renderAgents(api, period), undefined)
+}
+
+export function showProjects(api: TuiPluginApi, period: ReportPeriod): void {
+  api.ui.dialog.setSize("large")
+  api.ui.dialog.replace(() => renderProjects(api, period), undefined)
+}
+
+export function showSessions(api: TuiPluginApi, period: ReportPeriod): void {
+  api.ui.dialog.setSize("large")
+  api.ui.dialog.replace(() => renderSessions(api, period), undefined)
+}
+
+export function showGraph(api: TuiPluginApi, period: ReportPeriod, metric: UsageTimelineMetric = "tokens"): void {
+  api.ui.dialog.setSize("large")
+  // Metric state lives HERE, not inside the component: the host renderer does
+  // not reliably redraw plugin-rendered dialog content on reactive updates
+  // (same empirically-verified limitation as overview row highlights), so a
+  // signal flip alone repaints nothing. Re-calling dialog.replace forces the
+  // host to mount fresh content — the same workaround showOverview uses for
+  // navigation. The binding's run() re-invokes this with the flipped metric.
+  api.ui.dialog.replace(() => renderGraph(api, period, metric), undefined)
 }
 
 export function showHistory(api: TuiPluginApi, period: ReportPeriod): void {
@@ -100,6 +141,8 @@ function renderOverview(api: TuiPluginApi, period: ReportPeriod, selectedIndex =
     <UsageOverviewView
       api={api}
       overview={overview}
+      comparison={buildComparisonModel(result.comparison)}
+      budget={result.budget}
       actions={actions}
       tabs={buildPeriodTabs(api)}
       activePeriod={period}
@@ -124,6 +167,27 @@ function buildActions(api: TuiPluginApi, period: ReportPeriod, report: UsageRepo
       title: "By provider",
       description: `${formatNumber(report.perProvider.length)} provider${report.perProvider.length === 1 ? "" : "s"}`,
       run: () => showProviders(api, period),
+    })
+  }
+  if (report.perAgent.length > 0) {
+    actions.push({
+      title: "By agent",
+      description: `${formatNumber(report.perAgent.length)} agent${report.perAgent.length === 1 ? "" : "s"}`,
+      run: () => showAgents(api, period),
+    })
+  }
+  if (report.perProject.length > 0) {
+    actions.push({
+      title: "By project",
+      description: `${formatNumber(report.perProject.length)} project${report.perProject.length === 1 ? "" : "s"}`,
+      run: () => showProjects(api, period),
+    })
+  }
+  if (report.perSession.length > 0) {
+    actions.push({
+      title: "By session",
+      description: `${formatNumber(report.perSession.length)} session${report.perSession.length === 1 ? "" : "s"}`,
+      run: () => showSessions(api, period),
     })
   }
   actions.push({
@@ -155,17 +219,42 @@ function renderProviders(api: TuiPluginApi, period: ReportPeriod): JSX.Element {
   return <UsageProvidersDialog api={api} rows={rows} />
 }
 
-function renderGraph(api: TuiPluginApi, period: ReportPeriod): JSX.Element {
+function renderAgents(api: TuiPluginApi, period: ReportPeriod): JSX.Element {
+  const result = computeReportSafely(period)
+  if (result.kind === "error") return <UsageErrorView api={api} error={result.error} />
+  const rows = buildUsageAgents(result.report)
+  if (rows.length === 0) return <UsageEmptyView api={api} periodLabel={result.report.periodLabel} />
+  return <UsageAgentsDialog api={api} rows={rows} onBack={() => showOverview(api, period)} />
+}
+
+function renderProjects(api: TuiPluginApi, period: ReportPeriod): JSX.Element {
+  const result = computeReportSafely(period)
+  if (result.kind === "error") return <UsageErrorView api={api} error={result.error} />
+  const rows = buildUsageProjects(result.report)
+  if (rows.length === 0) return <UsageEmptyView api={api} periodLabel={result.report.periodLabel} />
+  return <UsageProjectsDialog api={api} rows={rows} onBack={() => showOverview(api, period)} />
+}
+
+function renderSessions(api: TuiPluginApi, period: ReportPeriod): JSX.Element {
+  const result = computeReportSafely(period)
+  if (result.kind === "error") return <UsageErrorView api={api} error={result.error} />
+  const rows = buildUsageSessions(result.report)
+  if (rows.length === 0) return <UsageEmptyView api={api} periodLabel={result.report.periodLabel} />
+  return <UsageSessionsDialog api={api} rows={rows} onBack={() => showOverview(api, period)} />
+}
+
+function renderGraph(api: TuiPluginApi, period: ReportPeriod, metric: UsageTimelineMetric): JSX.Element {
   const result = computeTimelineSafely(period)
   if (result.kind === "error") return <UsageErrorView api={api} error={result.error} />
-  const rows = buildUsageTimelineModel(result.buckets)
-  if (rows.length === 0) return <UsageEmptyView api={api} periodLabel={periodLabel(period)} />
+  if (result.buckets.length === 0) return <UsageEmptyView api={api} periodLabel={periodLabel(period)} />
   return (
     <UsageGraphView
       api={api}
       periodLabel={periodLabel(period)}
-      rows={rows}
+      buckets={result.buckets}
+      metric={metric}
       onBack={() => showOverview(api, period)}
+      onToggleMetric={(next) => showGraph(api, period, next)}
     />
   )
 }
@@ -242,8 +331,9 @@ export function computeTimelineSafely(
 }
 
 /**
- * Compute a report for the route/period. NEVER throws: every failure returns
- * an error payload that renders as a visible in-popup message.
+ * Compute a report (+ period comparison) for the route/period. NEVER throws:
+ * every failure returns an error payload that renders as a visible in-popup
+ * message.
  */
 export function computeReportSafely(
   period: ReportPeriod,
@@ -254,7 +344,12 @@ export function computeReportSafely(
     const paths = resolvePaths()
     db = UsageDatabase.open(paths.usageDbPath, { readOnly: true })
     const pricing = new HybridPricingProvider(db)
-    return { kind: "ok", report: computeReport(db, period, filter, { pricing }) }
+    return {
+      kind: "ok",
+      report: computeReport(db, period, filter, { pricing }),
+      comparison: buildComparison(db, period, filter, { pricing }),
+      budget: computeBudgetModel(db),
+    }
   } catch (error) {
     return { kind: "error", error: String(error) }
   } finally {
@@ -265,5 +360,24 @@ export function computeReportSafely(
         // closing must never mask the report
       }
     }
+  }
+}
+
+/**
+ * Budget lines for the overview. Budgets are read once per renderOverview call
+ * (a cheap synchronous fs read); spend windows are LOCAL calendar day/month.
+ * Like every render path here this NEVER throws — any failure simply hides
+ * the block.
+ */
+function computeBudgetModel(db: UsageDatabase): UsageBudgetModel {
+  try {
+    const budgets = loadBudgets(budgetsConfigDir())
+    if (!budgets) return { visible: false, lines: [] }
+    const now = Date.now()
+    const daily = budgets.daily !== null ? spendSince(db, startOfLocalDay(now)) : null
+    const monthly = budgets.monthly !== null ? spendSince(db, startOfLocalMonth(now)) : null
+    return buildBudgetModel(budgets, daily, monthly)
+  } catch {
+    return { visible: false, lines: [] }
   }
 }

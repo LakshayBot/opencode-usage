@@ -1,11 +1,17 @@
 import { describe, it } from "node:test"
 import assert from "node:assert/strict"
 import {
+  buildComparisonModel,
+  buildUsageAgents,
   buildUsageModels,
   buildUsageOverview,
   buildUsagePeriodSummaries,
+  buildUsageProjects,
   buildUsageProviders,
+  buildUsageSessions,
+  MAX_SESSION_TITLE_CHARS,
 } from "../src/ui/usage/usage-view-model.ts"
+import type { PeriodComparison } from "../src/reporting/usage-report.ts"
 import type { UsageReport } from "../src/types/usage.ts"
 
 function makeReport(overrides: Partial<UsageReport> = {}): UsageReport {
@@ -31,6 +37,9 @@ function makeReport(overrides: Partial<UsageReport> = {}): UsageReport {
     },
     perModel: [],
     perProvider: [],
+    perAgent: [],
+    perProject: [],
+    perSession: [],
     averages: { inputTokensPerUserMessage: null, outputTokensPerAssistantResponse: null },
     topModels: { mostUsed: null, mostExpensive: null },
     largestRequest: null,
@@ -57,6 +66,7 @@ describe("buildUsageOverview", () => {
     assert.equal(view.totalTokens, 17100)
     assert.equal(view.inputTokens, 3000)
     assert.equal(view.outputTokens, 800)
+    assert.equal(view.reasoningTokens, 100)
     assert.equal(view.cacheReadTokens, 13000)
     assert.equal(view.cacheWriteTokens, 300)
     assert.equal(view.cacheAvailable, true)
@@ -108,6 +118,77 @@ describe("buildUsageModels / buildUsageProviders", () => {
   })
 })
 
+describe("buildUsageAgents / buildUsageProjects", () => {
+  it("maps per-agent rows through unchanged", () => {
+    const report = makeReport({
+      perAgent: [
+        { agent: "build", requests: 3, totalTokens: 17100, inputTokens: 3000, outputTokens: 800, cost: 0.03 },
+        { agent: "explore", requests: 1, totalTokens: 900, inputTokens: 800, outputTokens: 100, cost: null },
+      ],
+    })
+    const agents = buildUsageAgents(report)
+    assert.deepEqual(agents, [
+      { agent: "build", requests: 3, totalTokens: 17100, inputTokens: 3000, outputTokens: 800, cost: 0.03 },
+      { agent: "explore", requests: 1, totalTokens: 900, inputTokens: 800, outputTokens: 100, cost: null },
+    ])
+  })
+
+  it("maps per-project rows through unchanged", () => {
+    const report = makeReport({
+      perProject: [{ project: "(no project)", requests: 2, totalTokens: 1200, inputTokens: 1100, outputTokens: 100, cost: 0.01 }],
+    })
+    assert.deepEqual(buildUsageProjects(report), [
+      { project: "(no project)", requests: 2, totalTokens: 1200, inputTokens: 1100, outputTokens: 100, cost: 0.01 },
+    ])
+  })
+
+  it("empty grouping arrays map to empty view models", () => {
+    assert.deepEqual(buildUsageAgents(makeReport()), [])
+    assert.deepEqual(buildUsageProjects(makeReport()), [])
+  })
+})
+
+describe("buildUsageSessions", () => {
+  it("maps per-session rows through with titles truncated to the cap", () => {
+    const longTitle = "x".repeat(60)
+    const report = makeReport({
+      perSession: [
+        { sessionId: "ses_a", title: longTitle, requests: 3, totalTokens: 17100, cost: 0.03, lastActivity: 100 },
+        { sessionId: "ses_b", title: "(untitled)", requests: 1, totalTokens: 900, cost: null, lastActivity: 200 },
+      ],
+    })
+    const rows = buildUsageSessions(report)
+    assert.equal(rows.length, 2)
+    assert.equal(rows[0]!.sessionId, "ses_a")
+    assert.equal(rows[0]!.displayTitle.length, MAX_SESSION_TITLE_CHARS)
+    assert.ok(rows[0]!.displayTitle.endsWith("…"))
+    assert.equal(rows[1]!.displayTitle, "(untitled)")
+    assert.deepEqual(
+      [rows[0]!.requests, rows[0]!.totalTokens, rows[0]!.cost, rows[0]!.lastActivity],
+      [3, 17100, 0.03, 100],
+    )
+    assert.deepEqual([rows[1]!.requests, rows[1]!.cost], [1, null])
+  })
+
+  it("keeps titles of exactly the cap length unchanged and truncates one past it", () => {
+    const exact = "y".repeat(MAX_SESSION_TITLE_CHARS)
+    const over = `${exact}z`
+    const report = makeReport({
+      perSession: [
+        { sessionId: "s1", title: exact, requests: 1, totalTokens: 10, cost: null, lastActivity: 1 },
+        { sessionId: "s2", title: over, requests: 1, totalTokens: 20, cost: null, lastActivity: 2 },
+      ],
+    })
+    const rows = buildUsageSessions(report)
+    assert.equal(rows[0]!.displayTitle, exact)
+    assert.equal(rows[1]!.displayTitle, `${"y".repeat(MAX_SESSION_TITLE_CHARS - 1)}…`)
+  })
+
+  it("empty per-session arrays map to empty view models", () => {
+    assert.deepEqual(buildUsageSessions(makeReport()), [])
+  })
+})
+
 describe("buildUsagePeriodSummaries", () => {
   it("builds one summary per report, reusing the overview cost signal", () => {
     const summaries = buildUsagePeriodSummaries([
@@ -119,5 +200,70 @@ describe("buildUsagePeriodSummaries", () => {
     assert.equal(summaries[0]!.label, "Today")
     assert.equal(summaries[1]!.label, "All Time")
     assert.equal(summaries[1]!.cost, null)
+  })
+})
+
+describe("buildComparisonModel", () => {
+  function makeCmp(overrides: Partial<PeriodComparison> = {}): PeriodComparison {
+    return {
+      available: true,
+      label: "Last 7 Days",
+      current: { requests: 134, totalTokens: 1000, cost: 2 },
+      previous: { requests: 100, totalTokens: 750, cost: 3 },
+      delta: { requestsPct: 34, totalTokensPct: 33, costPct: -33 },
+      ...overrides,
+    }
+  }
+
+  it("renders up, down and composed line with the period label", () => {
+    const model = buildComparisonModel(makeCmp())
+    assert.equal(model.available, true)
+    assert.equal(model.requestsText, "+34%")
+    assert.equal(model.totalTokensText, "+33%")
+    assert.equal(model.costText, "-33%")
+    assert.equal(model.text, "vs prev Last 7 Days: req +34% · tok +33% · cost -33%")
+  })
+
+  it("renders em dash for null pcts (including unknown costs)", () => {
+    const model = buildComparisonModel(
+      makeCmp({
+        delta: { requestsPct: null, totalTokensPct: -12, costPct: null },
+        current: { requests: 0, totalTokens: 660, cost: null },
+      }),
+    )
+    assert.equal(model.requestsText, "—")
+    assert.equal(model.totalTokensText, "-12%")
+    assert.equal(model.costText, "—")
+    assert.equal(model.text, "vs prev Last 7 Days: req — · tok -12% · cost —")
+  })
+
+  it("renders 'new' when usage appears from a zero previous window", () => {
+    const model = buildComparisonModel(
+      makeCmp({
+        previous: { requests: 0, totalTokens: 0, cost: 0 },
+        delta: { requestsPct: null, totalTokensPct: null, costPct: null },
+      }),
+    )
+    assert.equal(model.requestsText, "new")
+    assert.equal(model.totalTokensText, "new")
+    // zero-to-zero is not 'new', just not comparable
+    const flat = buildComparisonModel(
+      makeCmp({ current: { requests: 0, totalTokens: 0, cost: 0 }, delta: { requestsPct: null, totalTokensPct: null, costPct: null } }),
+    )
+    assert.equal(flat.requestsText, "—")
+    // an unknown current cost is never comparable, so it stays '—', never 'new'
+    const unknownCost = buildComparisonModel(
+      makeCmp({ current: { requests: 5, totalTokens: 5, cost: null }, delta: { requestsPct: null, totalTokensPct: null, costPct: null } }),
+    )
+    assert.equal(unknownCost.costText, "—")
+  })
+
+  it("renders '+0%' for an unchanged metric and hides everything when unavailable", () => {
+    const unchanged = buildComparisonModel(makeCmp({ delta: { requestsPct: 0, totalTokensPct: 0, costPct: 0 } }))
+    assert.equal(unchanged.text, "vs prev Last 7 Days: req +0% · tok +0% · cost +0%")
+
+    const hidden = buildComparisonModel(makeCmp({ available: false }))
+    assert.equal(hidden.available, false)
+    assert.equal(hidden.text, "")
   })
 })

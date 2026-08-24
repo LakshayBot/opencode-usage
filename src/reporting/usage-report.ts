@@ -30,13 +30,22 @@ import { UsageDatabase } from "../storage/database.ts"
 export interface ReportOptions {
   pricing: PricingProvider
   now?: number
+  /**
+   * Timeline-only: cap for the 'all' period's daily buckets. Defaults to the
+   * TUI display cap; pass null for unbounded output (data exports).
+   */
+  maxBuckets?: number | null
 }
+
+/** Cap for the per-session breakdown: only the top 50 sessions by spend. */
+const MAX_SESSION_ROWS = 50
 
 interface EventRow {
   provider: string | null
   model: string | null
   agent: string | null
   parent_session_id: string | null
+  project_id: string | null
   input_tokens: number
   output_tokens: number
   reasoning_tokens: number
@@ -107,6 +116,144 @@ export function periodLabel(period: ReportPeriod): string {
       return "Last 30 Days"
     case "all":
       return "All Time"
+  }
+}
+
+// ---- period comparison -------------------------------------------------------
+//
+// "vs prev" deltas for the overview: the current period window (identical
+// selection to computeReport) against the window of the same length ending
+// where the current one starts — e.g. 'week' compares [now-7d, now] with
+// [now-14d, now-7d). Windows are half-open on the shared edge: an event
+// stamped exactly at the boundary belongs to the CURRENT window only, so no
+// request is ever counted twice.
+
+export interface ComparisonTotals {
+  requests: number
+  totalTokens: number
+  /** Follows the cost.unknown convention: null when any event lacks a cost. */
+  cost: number | null
+}
+
+export interface PeriodComparison {
+  /** False when no preceding window exists ('session'/'all') — UI hides the block. */
+  available: boolean
+  /** Human label of the compared period (e.g. "Last 7 Days"). */
+  label: string
+  current: ComparisonTotals
+  previous: ComparisonTotals
+  delta: {
+    requestsPct: number | null
+    totalTokensPct: number | null
+    costPct: number | null
+  }
+}
+
+const zeroedTotals = (): ComparisonTotals => ({ requests: 0, totalTokens: 0, cost: 0 })
+
+/**
+ * Integer percent change, rounded; null whenever the previous side is zero —
+ * both-empty and brand-new-usage are reported as null and distinguished by the
+ * view model (— vs new).
+ */
+function pctDelta(current: number, previous: number): number | null {
+  if (previous === 0) return null
+  return Math.round(((current - previous) / previous) * 100)
+}
+
+/** Aggregate requests/tokens/cost over `[start, end)` (end omitted = open). */
+function aggregateWindow(db: UsageDatabase, filter: ReportFilter, start: number, end: number | null): ComparisonTotals {
+  const clauses = ["e.timestamp >= ?"]
+  const params: Array<string | number> = [start]
+  if (end !== null) {
+    clauses.push("e.timestamp < ?")
+    params.push(end)
+  }
+  if (filter.provider) {
+    clauses.push("e.provider LIKE ?")
+    params.push(`%${filter.provider}%`)
+  }
+  if (filter.model) {
+    clauses.push("e.model LIKE ?")
+    params.push(`%${filter.model}%`)
+  }
+  const row = db.raw
+    .prepare(
+      `SELECT COUNT(*) AS requests,
+              COALESCE(SUM(e.total_tokens), 0) AS totalTokens,
+              SUM(e.cost) AS costSum,
+              SUM(CASE WHEN e.cost IS NULL THEN 1 ELSE 0 END) AS costUnknowns
+       FROM usage_events e
+       WHERE ${clauses.join(" AND ")}`,
+    )
+    .get(...params) as { requests: number; totalTokens: number; costSum: number | null; costUnknowns: number | null }
+  const cost = (row.costUnknowns ?? 0) > 0 ? null : (row.costSum ?? 0)
+  return { requests: row.requests, totalTokens: row.totalTokens, cost }
+}
+
+// ---- budget windows ---------------------------------------------------------
+//
+// Budgets reset on LOCAL calendar boundaries: the daily window starts at local
+// midnight, the monthly window on the 1st at local midnight. Spend is summed
+// from that boundary onward with no upper edge (the window always reaches now).
+
+/** Local midnight of the day containing `now`. */
+export function startOfLocalDay(now: number): number {
+  const d = new Date(now)
+  return new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime()
+}
+
+/** Local midnight of the 1st of the month containing `now`. */
+export function startOfLocalMonth(now: number): number {
+  const d = new Date(now)
+  return new Date(d.getFullYear(), d.getMonth(), 1).getTime()
+}
+
+/**
+ * Total spend over `[startTsLocal, …)` for the budget display. Follows the
+ * cost.unknown convention used everywhere else in this module: a single
+ * unknown-cost event anywhere in the window makes the WHOLE window's cost
+ * unknown (null) instead of silently under-counting.
+ */
+export function spendSince(db: UsageDatabase, startTsLocal: number): number | null {
+  const row = db.raw
+    .prepare(
+      `SELECT SUM(e.cost) AS costSum,
+              SUM(CASE WHEN e.cost IS NULL THEN 1 ELSE 0 END) AS costUnknowns
+       FROM usage_events e
+       WHERE e.timestamp >= ?`,
+    )
+    .get(startTsLocal) as { costSum: number | null; costUnknowns: number | null }
+  return (row.costUnknowns ?? 0) > 0 ? null : (row.costSum ?? 0)
+}
+
+export function buildComparison(db: UsageDatabase, period: ReportPeriod, filter: ReportFilter = {}, options: ReportOptions): PeriodComparison {
+  const label = periodLabel(period)
+  if (period.kind === "session" || period.kind === "all") {
+    return {
+      available: false,
+      label,
+      current: zeroedTotals(),
+      previous: zeroedTotals(),
+      delta: { requestsPct: null, totalTokensPct: null, costPct: null },
+    }
+  }
+  const now = options.now ?? Date.now()
+  // 'today'/'week'/'month' always have a concrete start from periodRange.
+  const curStart = periodRange(period, now).start!
+  const prevStart = curStart - (now - curStart)
+  const current = aggregateWindow(db, filter, curStart, null)
+  const previous = aggregateWindow(db, filter, prevStart, curStart)
+  return {
+    available: true,
+    label,
+    current,
+    previous,
+    delta: {
+      requestsPct: pctDelta(current.requests, previous.requests),
+      totalTokensPct: pctDelta(current.totalTokens, previous.totalTokens),
+      costPct: current.cost !== null && previous.cost !== null ? pctDelta(current.cost, previous.cost) : null,
+    },
   }
 }
 
@@ -223,7 +370,7 @@ export function computeUsageTimeline(db: UsageDatabase, period: ReportPeriod, fi
   const whereSql = clauses.length ? `WHERE ${clauses.join(" AND ")}` : ""
   const eventRows = db.raw
     .prepare(
-      `SELECT e.provider, e.model, e.agent, e.parent_session_id,
+      `SELECT e.provider, e.model, e.agent, e.parent_session_id, e.project_id,
               e.input_tokens, e.output_tokens, e.reasoning_tokens,
               e.cache_read_tokens, e.cache_write_tokens, e.total_tokens,
               e.cost, e.provider_reported_cache, e.timestamp
@@ -288,9 +435,11 @@ export function computeUsageTimeline(db: UsageDatabase, period: ReportPeriod, fi
     })
     cursor = next
   }
-  // 'all' keeps only the most recent window; older events fall outside it.
-  if (period.kind === "all" && buckets.length > MAX_TIMELINE_BUCKETS) {
-    buckets = buckets.slice(buckets.length - MAX_TIMELINE_BUCKETS)
+  // 'all' keeps only the most recent window by default (TUI display cap);
+  // maxBuckets: null lifts it for consumers that need full history.
+  const maxBuckets = options.maxBuckets === undefined ? MAX_TIMELINE_BUCKETS : options.maxBuckets
+  if (period.kind === "all" && maxBuckets !== null && buckets.length > maxBuckets) {
+    buckets = buckets.slice(buckets.length - maxBuckets)
   }
 
   // ---- aggregate ------------------------------------------------------------
@@ -333,7 +482,7 @@ export function computeReport(db: UsageDatabase, period: ReportPeriod, filter: R
   // ---- usage events -------------------------------------------------------
   const eventRows = db.raw
     .prepare(
-      `SELECT e.provider, e.model, e.agent, e.parent_session_id,
+      `SELECT e.provider, e.model, e.agent, e.parent_session_id, e.project_id,
               e.input_tokens, e.output_tokens, e.reasoning_tokens,
               e.cache_read_tokens, e.cache_write_tokens, e.total_tokens,
               e.cost, e.provider_reported_cache, e.timestamp
@@ -345,6 +494,8 @@ export function computeReport(db: UsageDatabase, period: ReportPeriod, filter: R
   const totals = emptyAgg()
   const perModel = new Map<string, AggRow>()
   const perProvider = new Map<string, AggRow>()
+  const perAgent = new Map<string, AggRow>()
+  const perProject = new Map<string, AggRow>()
   const cacheReportingEvents = { read: 0, write: 0, input: 0, count: 0 }
   let exactCost: number | null = null
   let largest: UsageReport["largestRequest"] = null
@@ -398,6 +549,26 @@ export function computeReport(db: UsageDatabase, period: ReportPeriod, filter: R
       perProvider.set(pKey, pRow)
     }
     aggregateInto(pRow, row)
+
+    // Null agent folds into 'main', matching counts.mainAgentRequests (which
+    // classifies every non-subagent, non-system event — null included — as main).
+    const aKey = row.agent ?? "main"
+    let aRow = perAgent.get(aKey)
+    if (!aRow) {
+      aRow = emptyAgg()
+      perAgent.set(aKey, aRow)
+    }
+    aggregateInto(aRow, row)
+
+    // Null project ids are real (events can arrive before project tracking),
+    // so they get an explicit label instead of being dropped or merged.
+    const prKey = row.project_id ?? "(no project)"
+    let prRow = perProject.get(prKey)
+    if (!prRow) {
+      prRow = emptyAgg()
+      perProject.set(prKey, prRow)
+    }
+    aggregateInto(prRow, row)
   }
 
   // ---- message / session counts -------------------------------------------
@@ -517,6 +688,69 @@ export function computeReport(db: UsageDatabase, period: ReportPeriod, filter: R
     }))
     .sort((a, b) => b.totalTokens - a.totalTokens)
 
+  // Agent/project rows lead with spend (cost desc, unknown cost last), then
+  // token volume as the tiebreaker.
+  const agentRows = [...perAgent.entries()]
+    .map(([agent, row]) => ({
+      agent,
+      requests: row.requests,
+      totalTokens: row.totalTokens,
+      inputTokens: row.inputTokens,
+      outputTokens: row.outputTokens,
+      cost: row.cost,
+    }))
+    .sort(costDescThenTokensDesc)
+
+  const projectRows = [...perProject.entries()]
+    .map(([project, row]) => ({
+      project,
+      requests: row.requests,
+      totalTokens: row.totalTokens,
+      inputTokens: row.inputTokens,
+      outputTokens: row.outputTokens,
+      cost: row.cost,
+    }))
+    .sort(costDescThenTokensDesc)
+
+  // ---- per-session breakdown -------------------------------------------------
+  // Grouped in SQL over the exact same event selection as above, LEFT JOINing
+  // sessions for titles (events can outlive their session rows — those render
+  // as '(untitled)'). Cost follows the group convention: sum of known costs
+  // only (SUM ignores NULLs), null when every event in the session lacks one.
+  const sessionRows = (
+    db.raw
+      .prepare(
+        `SELECT e.session_id AS sessionId,
+                s.title AS title,
+                COUNT(*) AS requests,
+                COALESCE(SUM(e.total_tokens), 0) AS totalTokens,
+                SUM(e.cost) AS cost,
+                MAX(e.timestamp) AS lastActivity
+         FROM usage_events e
+         LEFT JOIN sessions s ON s.id = e.session_id
+         ${whereSql}
+         GROUP BY e.session_id`,
+      )
+      .all(...whereParams) as unknown as Array<{
+      sessionId: string
+      title: string | null
+      requests: number
+      totalTokens: number
+      cost: number | null
+      lastActivity: number
+    }>
+  )
+    .map((row) => ({
+      sessionId: row.sessionId,
+      title: row.title ?? "(untitled)",
+      requests: row.requests,
+      totalTokens: row.totalTokens,
+      cost: row.cost,
+      lastActivity: row.lastActivity,
+    }))
+    .sort(costDescThenTokensDesc)
+    .slice(0, MAX_SESSION_ROWS)
+
   const costSortable = modelRows.filter((row) => row.cost !== null)
   const mostUsed = modelRows[0] ?? null
   const mostExpensive = costSortable.length
@@ -563,6 +797,9 @@ export function computeReport(db: UsageDatabase, period: ReportPeriod, filter: R
     },
     perModel: modelRows,
     perProvider: providerRows,
+    perAgent: agentRows,
+    perProject: projectRows,
+    perSession: sessionRows,
     averages: {
       inputTokensPerUserMessage: userMessages > 0 ? totals.grossInput / userMessages : null,
       outputTokensPerAssistantResponse: assistantMessages > 0 ? totals.outputTokens / assistantMessages : null,
@@ -571,6 +808,17 @@ export function computeReport(db: UsageDatabase, period: ReportPeriod, filter: R
     largestRequest: largest,
     tracking: { startedAt, lastActivity },
   }
+}
+
+/** Cost desc (null = unknown = last), then token volume desc. */
+function costDescThenTokensDesc(
+  a: { totalTokens: number; cost: number | null },
+  b: { totalTokens: number; cost: number | null },
+): number {
+  const aCost = a.cost ?? Number.NEGATIVE_INFINITY
+  const bCost = b.cost ?? Number.NEGATIVE_INFINITY
+  if (aCost !== bCost) return bCost - aCost
+  return b.totalTokens - a.totalTokens
 }
 
 function aggregateInto(target: AggRow, source: EventRow): void {

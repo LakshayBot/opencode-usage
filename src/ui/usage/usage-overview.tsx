@@ -5,7 +5,7 @@
  * centered, Esc handled by the host). Presents a compact hierarchy:
  *
  *   Summary    Messages / Tokens / Cost   (primary, immediately answerable)
- *   Breakdown  Input / Output / Cache R/W (secondary)
+ *   Breakdown  Input / Output / Reasoning / Cache R/W (secondary)
  *   Views      By model · By provider · History (navigable, native list)
  *
  * Navigation reuses OpenCode's dialog.select keybindings (up/ctrl+p,
@@ -19,7 +19,7 @@ import type { TuiPluginApi } from "@opencode-ai/plugin/tui"
 import type { ReportPeriod } from "../../types/usage.ts"
 import { formatCost, formatNumber, formatPercent, formatTokens } from "./usage-format.ts"
 import { Divider, MetricRow, UsageHeader } from "./usage-view.tsx"
-import type { UsageOverviewModel } from "./usage-view-model.ts"
+import type { BudgetLineLevel, UsageBudgetModel, UsageComparisonModel, UsageOverviewModel } from "./usage-view-model.ts"
 
 const PERIOD_LABELS: Partial<Record<ReportPeriod["kind"], string>> = {
   session: "Session",
@@ -56,10 +56,29 @@ export function UsageOverviewView(props: {
   tabs?: ReportPeriod[]
   activePeriod?: ReportPeriod
   onSelectPeriod?: (period: ReportPeriod) => void
+  /** "vs prev" deltas under the tabs; hidden entirely when not available. */
+  comparison?: UsageComparisonModel
+  /** Budget lines under the comparison; hidden entirely when no budgets are
+   * configured (budgets.json absent) — see config/budgets.ts. */
+  budget?: UsageBudgetModel
 }): JSX.Element {
   const t = props.api.theme.current
   const count = () => props.actions.length
   const selected = props.selectedIndex ?? 0
+
+  // Budget line colors: muted while ok, warning-ish approaching the limit,
+  // error/danger once over. The theme's own fields are preferred with yellow/
+  // red-ish fallbacks for hosts that ship partial themes.
+  const budgetFg = (level: BudgetLineLevel) => {
+    switch (level) {
+      case "ok":
+        return t.textMuted
+      case "warn":
+        return t.warning ?? t.textMuted
+      case "over":
+        return t.error ?? t.warning ?? t.textMuted
+    }
+  }
 
   const dividerWidth = Math.max(8, Math.min(52, props.api.renderer.width - 12))
 
@@ -191,6 +210,33 @@ export function UsageOverviewView(props: {
         </box>
       </Show>
 
+      <Show when={props.comparison?.available}>
+        <box paddingLeft={4} paddingRight={4}>
+          <text fg={t.textMuted} wrapMode="none">
+            {props.comparison!.text}
+          </text>
+        </box>
+      </Show>
+
+      <Show when={props.budget?.visible}>
+        <box paddingLeft={4} paddingRight={4}>
+          <For each={props.budget?.lines ?? []}>
+            {(line) => (
+              <text
+                {...({
+                  // 'unknown of …' spend renders muted even though its level is
+                  // ok — missing data must not look like a healthy number.
+                  fg: line.text.startsWith("unknown") ? t.textMuted : budgetFg(line.level),
+                  wrapMode: "none",
+                } as TextProps)}
+              >
+                {`${line.label}: ${line.text}`}
+              </text>
+            )}
+          </For>
+        </box>
+      </Show>
+
       <box paddingLeft={4} paddingRight={4}>
         <text {...({ fg: t.text, bold: true, wrapMode: "none" } as TextProps)}>
           {props.overview.periodLabel}
@@ -215,6 +261,7 @@ export function UsageOverviewView(props: {
       <box paddingLeft={4} paddingRight={4} gap={1}>
         <MetricRow t={t} label="Input" value={formatTokens(props.overview.inputTokens)} />
         <MetricRow t={t} label="Output" value={formatTokens(props.overview.outputTokens)} />
+        <MetricRow t={t} label="Reasoning" value={formatTokens(props.overview.reasoningTokens)} />
         <MetricRow t={t} label="Cache Read" value={formatTokens(props.overview.cacheReadTokens)} />
         <MetricRow t={t} label="Cache Write" value={formatTokens(props.overview.cacheWriteTokens)} />
         <Show when={props.overview.cacheAvailable}>
