@@ -241,49 +241,98 @@ describe("buildUsageTimelineModel", () => {
     return { label: "Mon 15", start: 0, end: DAY_MS, inputTokens: totalTokens, outputTokens: 0, totalTokens, cost }
   }
 
-  it("scales bars to the max bucket and leaves zero buckets empty", () => {
-    const rows = buildUsageTimelineModel([bucket(800, 0.02), bucket(400, 0.01), bucket(0, 0)])
+  function hourlyBucket(index: number, totalTokens: number, cost: number | null = 0.5): TimelineBucket {
+    // Anchor to local midnight so day-grouping is timezone-safe.
+    const now = new Date()
+    const dayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime()
+    const start = dayStart + index * 3600_000
+    const d = new Date(start)
+    return {
+      label: `${String(d.getHours()).padStart(2, "0")}:00`,
+      start,
+      end: start + 3600_000,
+      inputTokens: totalTokens,
+      outputTokens: 0,
+      totalTokens,
+      cost,
+    }
+  }
+
+  it("scales bars to the max bucket and leaves interior zero buckets empty", () => {
+    const { rows } = buildUsageTimelineModel([bucket(800, 0.02), bucket(0, 0), bucket(400, 0.01)])
     assert.equal(rows.length, 3)
     assert.equal(rows[0]!.bar, "█".repeat(TIMELINE_BAR_WIDTH)) // max bucket -> full width
-    assert.equal(rows[1]!.bar, "█".repeat(TIMELINE_BAR_WIDTH / 2))
-    assert.equal(rows[2]!.bar, "") // zero bucket -> empty bar
+    assert.equal(rows[1]!.bar, "") // interior zero bucket -> empty bar (real gap)
+    assert.equal(rows[2]!.bar, "█".repeat(TIMELINE_BAR_WIDTH / 2))
+  })
+
+  it("trims empty leading/trailing buckets so the axis hugs the data", () => {
+    const { rows } = buildUsageTimelineModel([bucket(0, 0), bucket(0, 0), bucket(800, 0.02), bucket(400, 0.01), bucket(0, 0)])
+    assert.equal(rows.length, 2)
+    assert.equal(rows[0]!.tokensText, "800")
+    assert.equal(rows[1]!.tokensText, "400")
+  })
+
+  it("folds long hourly axes into daily buckets", () => {
+    // 30 non-empty hourly buckets across two days -> two daily rows
+    const buckets = Array.from({ length: 30 }, (_, i) => hourlyBucket(i, 100))
+    const { rows, foldedToDaily } = buildUsageTimelineModel(buckets)
+    assert.equal(foldedToDaily, true)
+    assert.equal(rows.length, 2)
+    assert.deepEqual(rows.map((r) => r.tokensText), ["2.4K", "600"])
+  })
+
+  it("does not fold short axes", () => {
+    const buckets = Array.from({ length: 5 }, (_, i) => hourlyBucket(i, 100))
+    const { rows, foldedToDaily } = buildUsageTimelineModel(buckets)
+    assert.equal(foldedToDaily, false)
+    assert.equal(rows.length, 5)
+    assert.match(rows[0]!.label, /^\d{2}:00$/)
   })
 
   it("keeps at least one bar character for any positive bucket", () => {
-    const rows = buildUsageTimelineModel([bucket(1_000_000, 1), bucket(1, 0.001)])
+    const { rows } = buildUsageTimelineModel([bucket(1_000_000, 1), bucket(1, 0.001)])
     assert.equal(rows[0]!.bar.length, TIMELINE_BAR_WIDTH)
     assert.ok(rows[1]!.bar.length >= 1)
     assert.equal(rows[1]!.bar.length, 1)
   })
 
-  it("formats tokens and costs with the shared helpers, Unknown for null cost", () => {
-    const rows = buildUsageTimelineModel([bucket(1500, 0.03), bucket(0, null)])
+  it("formats tokens and costs with the shared helpers, em dash for null cost", () => {
+    const { rows, costKnown } = buildUsageTimelineModel([bucket(1500, 0.03), bucket(200, null)])
+    assert.equal(costKnown, true)
     assert.equal(rows[0]!.tokensText, "1.5K")
     assert.equal(rows[0]!.costText, "$0.03")
     assert.equal(rows[0]!.cost, 0.03)
-    assert.equal(rows[1]!.tokensText, "0")
-    assert.equal(rows[1]!.costText, "Unknown")
+    assert.equal(rows[1]!.tokensText, "200")
+    assert.equal(rows[1]!.costText, "—")
     assert.equal(rows[1]!.cost, null)
   })
 
+  it("reports costKnown=false when no bucket has pricing", () => {
+    const { rows, costKnown } = buildUsageTimelineModel([bucket(100, null), bucket(200, null)])
+    assert.equal(costKnown, false)
+    assert.ok(rows.every((row) => row.costText === "—"))
+  })
+
   it("maps no buckets to no rows", () => {
-    assert.deepEqual(buildUsageTimelineModel([]), [])
+    assert.deepEqual(buildUsageTimelineModel([]), { rows: [], costKnown: false, foldedToDaily: false })
   })
 
   it("cost mode scales bars by bucket cost, max-cost bucket full width", () => {
     // cost order is the inverse of token order, proving bars track cost
-    const rows = buildUsageTimelineModel([bucket(400, 2), bucket(800, 1), bucket(0, 0)], { metric: "cost" })
+    const { rows } = buildUsageTimelineModel([bucket(400, 2), bucket(0, 0), bucket(800, 1)], { metric: "cost" })
+    assert.equal(rows.length, 3) // interior zero-cost bucket stays (real gap)
     assert.equal(rows[0]!.bar, "█".repeat(TIMELINE_BAR_WIDTH)) // max-cost bucket -> full width
-    assert.equal(rows[1]!.bar, "█".repeat(TIMELINE_BAR_WIDTH / 2))
-    assert.equal(rows[2]!.bar, "") // zero-cost bucket -> empty bar
+    assert.equal(rows[1]!.bar, "") // zero-cost bucket -> empty bar
+    assert.equal(rows[2]!.bar, "█".repeat(TIMELINE_BAR_WIDTH / 2))
     // the token column is untouched by the mode switch
     assert.equal(rows[0]!.tokensText, "400")
   })
 
   it("cost mode excludes unknown-cost buckets from the scale and renders '?'", () => {
-    const rows = buildUsageTimelineModel([bucket(900, null), bucket(200, 4), bucket(50, 1)], { metric: "cost" })
+    const { rows } = buildUsageTimelineModel([bucket(900, null), bucket(200, 4), bucket(50, 1)], { metric: "cost" })
     assert.equal(rows[0]!.bar, "")
-    assert.equal(rows[0]!.costText, "?") // never "$0.00" or "Unknown"
+    assert.equal(rows[0]!.costText, "?") // never "$0.00" or "—"
     assert.equal(rows[0]!.tokensText, "900")
     // known costs scale among themselves (max = 4), as if the null bucket were absent
     assert.equal(rows[1]!.bar, "█".repeat(TIMELINE_BAR_WIDTH))
@@ -291,7 +340,8 @@ describe("buildUsageTimelineModel", () => {
   })
 
   it("cost mode renders every bar empty with '?' when no bucket has pricing", () => {
-    const rows = buildUsageTimelineModel([bucket(100, null), bucket(200, null)], { metric: "cost" })
+    const { rows, costKnown } = buildUsageTimelineModel([bucket(100, null), bucket(200, null)], { metric: "cost" })
+    assert.equal(costKnown, false)
     for (const row of rows) {
       assert.equal(row.bar, "")
       assert.equal(row.costText, "?")
@@ -301,7 +351,7 @@ describe("buildUsageTimelineModel", () => {
   it("defaults to token scaling regardless of cost values", () => {
     const buckets = [bucket(400, 9), bucket(800, 0.01)]
     assert.deepEqual(buildUsageTimelineModel(buckets), buildUsageTimelineModel(buckets, { metric: "tokens" }))
-    const rows = buildUsageTimelineModel(buckets)
+    const { rows } = buildUsageTimelineModel(buckets)
     assert.equal(rows[0]!.bar, "█".repeat(TIMELINE_BAR_WIDTH / 2)) // scaled by tokens, not the $9 cost
     assert.equal(rows[1]!.bar, "█".repeat(TIMELINE_BAR_WIDTH))
     assert.equal(rows[0]!.costText, "$9.00")

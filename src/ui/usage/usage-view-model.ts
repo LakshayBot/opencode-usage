@@ -216,28 +216,108 @@ export interface UsageTimelineRowModel {
   costText: string
 }
 
+export interface UsageTimelinePresentation {
+  rows: UsageTimelineRowModel[]
+  /** false -> every bucket lacks pricing; the view hides the cost column. */
+  costKnown: boolean
+  /** hourly buckets were folded into daily ones to keep the popup compact */
+  foldedToDaily: boolean
+}
+
 /**
- * Render-ready rows for the "Graph" view. The busiest bucket spans the full
- * `TIMELINE_BAR_WIDTH`; every bucket with a positive value keeps at least one
- * bar character so activity stays visible, zero buckets render an empty bar.
+ * Render-ready rows for the "Graph" view, shaped for the popup:
+ *
+ *  1. Empty leading/trailing buckets are trimmed so the axis hugs the data —
+ *     a session that touched two hours must not render a full 24-hour axis of
+ *     "0 / —" rows (interior zero buckets stay: gaps in activity are real).
+ *  2. Hourly ranges longer than `TIMELINE_FOLD_TO_DAILY_AFTER` buckets are
+ *     folded into daily buckets, mirroring the reporting layer's daily label
+ *     format, so a multi-day session stays scannable.
+ *  3. The busiest bucket spans the full `TIMELINE_BAR_WIDTH`; every bucket
+ *     with a positive value keeps at least one bar character.
  *
  * In "cost" mode bars scale by bucket cost instead of tokens, and buckets with
  * unknown pricing cannot be placed on that scale at all: they are excluded from
  * the max computation and render an empty bar with "?" as their cost text
- * (never "$0.00"). `tokensText` shows the token count in either mode.
+ * (never "$0.00"). In "tokens" mode unknown costs render as "—" — the view
+ * hides the cost column entirely when `costKnown` is false.
  */
-export function buildUsageTimelineModel(buckets: TimelineBucket[], options: UsageTimelineOptions = {}): UsageTimelineRowModel[] {
-  if ((options.metric ?? "tokens") === "tokens") {
-    const maxTotal = buckets.reduce((max, bucket) => Math.max(max, bucket.totalTokens), 0)
-    return buckets.map((bucket) => ({
-      label: bucket.label,
-      bar: timelineBar(bucket.totalTokens, maxTotal),
-      totalTokens: bucket.totalTokens,
-      cost: bucket.cost,
-      tokensText: formatTokens(bucket.totalTokens),
-      costText: formatCost(bucket.cost),
-    }))
+export function buildUsageTimelineModel(buckets: TimelineBucket[], options: UsageTimelineOptions = {}): UsageTimelinePresentation {
+  let scoped = trimEmptyEdges(buckets)
+  let foldedToDaily = false
+  if (scoped.length > TIMELINE_FOLD_TO_DAILY_AFTER) {
+    const folded = foldToDaily(scoped)
+    if (folded.length < scoped.length) {
+      scoped = folded
+      foldedToDaily = true
+    }
   }
+
+  const rows =
+    (options.metric ?? "tokens") === "tokens"
+      ? timelineTokenRows(scoped)
+      : timelineCostRows(scoped)
+  return { rows, costKnown: rows.some((row) => row.cost !== null), foldedToDaily }
+}
+
+/** Hourly axes longer than this become daily before rendering. */
+export const TIMELINE_FOLD_TO_DAILY_AFTER = 24
+
+function trimEmptyEdges(buckets: TimelineBucket[]): TimelineBucket[] {
+  let start = 0
+  let end = buckets.length
+  while (start < end && buckets[start]!.totalTokens === 0) start++
+  while (end > start && buckets[end - 1]!.totalTokens === 0) end--
+  return buckets.slice(start, end)
+}
+
+const TIMELINE_WEEKDAYS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"] as const
+
+function timelineDayLabel(ms: number): string {
+  const d = new Date(ms)
+  return `${TIMELINE_WEEKDAYS[d.getDay()] ?? "?"} ${d.getDate()}`
+}
+
+function timelineDayFloor(ms: number): number {
+  const d = new Date(ms)
+  return new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime()
+}
+
+/** Merge consecutive hourly buckets into one per local day (sum tokens, and
+ *  cost turns unknown if any merged bucket was unknown). */
+function foldToDaily(buckets: TimelineBucket[]): TimelineBucket[] {
+  const out: TimelineBucket[] = []
+  let current: TimelineBucket | null = null
+  for (const bucket of buckets) {
+    if (current === null || timelineDayFloor(current.start) !== timelineDayFloor(bucket.start)) {
+      if (current !== null) out.push(current)
+      current = { ...bucket, label: timelineDayLabel(bucket.start) }
+    } else {
+      current.inputTokens += bucket.inputTokens
+      current.outputTokens += bucket.outputTokens
+      current.totalTokens += bucket.totalTokens
+      current.end = bucket.end
+      if (bucket.cost === null) current.cost = null
+      else if (current.cost !== null) current.cost += bucket.cost
+    }
+  }
+  if (current !== null) out.push(current)
+  return out
+}
+
+function timelineTokenRows(buckets: TimelineBucket[]): UsageTimelineRowModel[] {
+  const maxTotal = buckets.reduce((max, bucket) => Math.max(max, bucket.totalTokens), 0)
+  return buckets.map((bucket) => ({
+    label: bucket.label,
+    bar: timelineBar(bucket.totalTokens, maxTotal),
+    totalTokens: bucket.totalTokens,
+    cost: bucket.cost,
+    tokensText: formatTokens(bucket.totalTokens),
+    costText: bucket.cost === null ? "—" : formatCost(bucket.cost),
+  }))
+}
+
+function timelineCostRows(buckets: TimelineBucket[]): UsageTimelineRowModel[] {
   // Cost mode — unknown-pricing buckets stay invisible to the scale.
   const maxCost = buckets.reduce((max, bucket) => (bucket.cost !== null && bucket.cost > max ? bucket.cost : max), 0)
   return buckets.map((bucket) => ({
