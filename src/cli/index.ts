@@ -18,6 +18,7 @@
 import fs from "node:fs"
 import { detectOpenCode } from "../opencode/detector.ts"
 import {
+  deploymentNotice,
   install,
   status,
   uninstall,
@@ -398,7 +399,9 @@ export async function main(): Promise<void> {
       error(`unknown command "${command}" — run \`opencode-usage help\``)
   }
 
-  if (!isInfoCommand(command)) {
+  if (!isInfoCommand(command) && command !== "install" && command !== "uninstall") {
+    const stale = deploymentNotice(resolvePaths(), VERSION)
+    if (stale) process.stderr.write(`\n${stale}\n\n`)
     const notice = await checkForUpdate()
     if (notice) process.stderr.write(`\n${notice}\n\n`)
   }

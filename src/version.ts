@@ -3,4 +3,4 @@
  * Kept in sync with package.json by scripts/build.mjs (build fails on drift).
  */
 
-export const VERSION = "0.1.7"
+export const VERSION = "0.1.8"

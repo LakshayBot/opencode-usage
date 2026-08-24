@@ -36,6 +36,63 @@ export function isOwnedPluginFile(content: string): boolean {
   return content.startsWith(`// ${INSTALL_MARKER}`)
 }
 
+/** Version recorded in a deployed plugin file's marker header, or null. */
+export function readDeployedPluginVersion(paths: Paths, kind: "server" | "tui"): string | null {
+  try {
+    const file = kind === "server" ? paths.serverPluginPath : paths.tuiPluginPath
+    const content = fs.readFileSync(file, "utf8")
+    if (!isOwnedPluginFile(content)) return null
+    const match = new RegExp(`^// ${INSTALL_MARKER} v(\\d+\\.\\d+\\.\\d+)`, "m").exec(content)
+    return match?.[1] ?? null
+  } catch {
+    return null
+  }
+}
+
+/**
+ * Detect a missing or stale deployment (e.g. npm blocked the postinstall
+ * script, or the package was updated without re-running `install`).
+ * Returns a human-readable notice, or null when everything is in sync.
+ */
+export function deploymentNotice(paths: Paths, version: string): string | null {
+  let configExists = false
+  try {
+    configExists = fs.existsSync(paths.configDir)
+  } catch {
+    return null
+  }
+  const server = readDeployedPluginVersion(paths, "server")
+  const tui = readDeployedPluginVersion(paths, "tui")
+
+  if (!configExists && server === null && tui === null) return null
+
+  for (const [kind, deployed] of [
+    ["server plugin", server],
+    ["TUI plugin", tui],
+  ] as const) {
+    if (deployed !== null && deployed !== version) {
+      return (
+        `note: the installed ${kind} is v${deployed} but this package is v${version}.\n` +
+        `      Run \`opencode-usage install\` and restart opencode to update it.`
+      )
+    }
+  }
+
+  if (server === null && tui === null) {
+    return (
+      `note: the /usage integration is not deployed (npm may have skipped this package's postinstall script).\n` +
+      `      Run \`opencode-usage install\` and restart opencode.`
+    )
+  }
+  if (server === null || tui === null) {
+    return (
+      `note: the /usage integration is only partially deployed.\n` +
+      `      Run \`opencode-usage install\` and restart opencode.`
+    )
+  }
+  return null
+}
+
 export function usageCommandMarkdown(): string {
   return [
     "---",

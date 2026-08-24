@@ -1,6 +1,6 @@
 {
   "name": "@skinnysheep/opencode-usage",
-  "version": "0.1.7",
+  "version": "0.1.8",
   "description": "Track OpenCode token usage, cache statistics and estimated costs across all your projects. Global /usage slash command.",
   "type": "module",
   "license": "MIT",
@@ -54,5 +54,8 @@
     "esbuild": "^0.25.0",
     "solid-js": "1.9.12",
     "typescript": "^5.8.0"
+  },
+  "dependencies": {
+    "@skinnysheep/opencode-usage": "^0.1.7"
   }
 }

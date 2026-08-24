@@ -51,10 +51,14 @@ don't need a second command. Just restart opencode (or start a new session) and
 select `/usage` in the palette — the native report popup opens in any project.
 
 - Only global installs trigger it; installing the package as a regular
-dependency never touches your config.
+  dependency never touches your config.
 - Upgrades re-run it, so fixes/improvements apply on the next `npm update -g`.
 - Disable it with `OPENCODE_USAGE_AUTO_INSTALL=0` (or `npm i -g --ignore-scripts`) and run
   `opencode-usage install` whenever you want.
+- Some hardened npm setups block lifecycle scripts entirely (`allow-scripts`
+  policies). The package still installs fine — just run `opencode-usage install`
+  once afterwards; every CLI command prints a reminder until the integration is
+  deployed and current.
 
 ### Install what it does
 
