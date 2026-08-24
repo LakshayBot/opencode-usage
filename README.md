@@ -6,36 +6,33 @@
 
 **⭐ Like this plugin? Star the repo — it helps others discover it.**
 
-Track your **OpenCode** token usage, cache statistics and estimated costs — across **all** your projects, from one global database.
+Track your **OpenCode** token usage, cache statistics and estimated costs — across **all** your projects, from one global database — in a native OpenCode popup with graphs, drill-downs and spend budgets.
 
 ```
 /usage
 ```
 
 ```
-MESSAGES
-User Messages:          128
-Assistant Messages:     127
-Model Requests:         312
-Sessions:               42
-
-TOKENS
-Input:              1,245,000
-Output:               342,000
-Cache Read:         4,830,000
-Cache Write:          215,000
-Total Processed:    6,632,000
-
-CACHE
-Cache Hit Rate:         79.5%
-Estimated Savings:     $18.92
-
-COST (ESTIMATED)
-Input Cost:             $4.21
-Output Cost:            $5.13
-...
-Estimated Total:       $14.27
+┌ Usage                                              esc ┐
+│ Session · Today · Week · Month · All                     │
+│ vs prev: +12% req · +8% tokens                           │
+│ Budget  $1.20 of $2.00 (60%)                             │
+│                                                          │
+│ Messages          142      Input               32.4K    │
+│ Tokens           48.6K     Output               8.2K    │
+│ Cost              $0.07    Reasoning            1.1K    │
+│                            Cache Read           7.8K    │
+│                            Cache Write          223     │
+│ ─────────────────────────────────────────────────────    │
+│    By model · By provider · By agent · By project        │
+│    By session · Graph · History                          │
+│                                                          │
+│ ↑↓ navigate · ←→ period · enter open · esc close         │
+└──────────────────────────────────────────────────────────┘
 ```
+
+Zero LLM tokens, theme-aware, Esc to close — the same dialog system behind
+OpenCode's theme and model selectors.
 
 ## Installation
 
@@ -48,7 +45,7 @@ npm install -g @skinnysheep/opencode-usage
 That's it — **global installs run the integration automatically** (a `postinstall`
 hook performs the same idempotent `install` as `opencode-usage install`), so you
 don't need a second command. Just restart opencode (or start a new session) and
-select `/usage` in the palette — the native report popup opens in any project.
+select `/usage` in the palette — the native popup opens in any project.
 
 - Only global installs trigger it; installing the package as a regular
   dependency never touches your config.
@@ -57,8 +54,9 @@ select `/usage` in the palette — the native report popup opens in any project.
   `opencode-usage install` whenever you want.
 - Some hardened npm setups block lifecycle scripts entirely (`allow-scripts`
   policies). The package still installs fine — just run `opencode-usage install`
-  once afterwards; every CLI command prints a reminder until the integration is
-  deployed and current.
+  once afterwards. Every CLI command compares the deployed plugin files against
+  the package version and prints an explicit reminder until they are current,
+  so a silently-skipped postinstall can never go unnoticed.
 
 ### Install what it does
 
@@ -78,30 +76,53 @@ On Windows these live under the home-dir XDG paths too — `C:\Users\you\.config
 
 Your existing `opencode.json` is **never modified**. `install` is **idempotent** — safe to run any number of times.
 
-## Usage
+## The popup
 
-The slash palette shows **exactly one entry**: `/usage`. Selecting it opens a
-**native OpenCode-style popup** (zero LLM tokens, theme-aware, Esc to close) —
-the same dialog system behind the theme and model selectors — so the report
-looks and behaves identically no matter which model is active.
+The slash palette shows **exactly one entry**: `/usage`. Opened from inside a
+session it defaults to that session; from the home screen it defaults to today.
 
-Inside the popup, **period tabs** switch between scopes:
+| Keys | Action |
+|---|---|
+| `←` `→` | Switch period tab (Session · Today · Week · Month · All) |
+| `↑` `↓` | Navigate the action list |
+| `Enter` | Open the highlighted view |
+| `Backspace` / `←` | Back (detail views) |
+| `Esc` / `Ctrl+C` | Close |
 
+**Overview** — primary summary (Messages / Tokens / Cost), full breakdown
+(Input / Output / Reasoning / Cache Read / Cache Write / Cache Hit), a
+`vs prev` comparison against the previous period (hidden for Session/All), and
+optional budget lines (see [Budgets](#budgets)).
+
+**Graph** — tokens over time as Unicode bar charts. Hourly buckets for
+Session/Today, daily for Week/Month/All. The axis hugs your data (empty edges
+trimmed), long ranges fold into daily rows, and the list scrolls inside a
+bounded popup (`↑`/`↓`). `←`/`→` flips the bars between token volume and dollar
+cost. Bucket costs use current pricing when known and otherwise fall back to
+the exact at-use cost opencode recorded; the cost column hides entirely when
+neither exists.
+
+**Drill-downs** — `By model`, `By provider`, `By agent`, `By project` and
+`By session` open native searchable lists (the same selector OpenCode uses for
+themes/models) with per-row tokens, requests and cost. Selecting a model opens
+a compact detail view; `Backspace` goes back.
+
+**History** — every period side by side (requests · tokens · cost); selecting
+one re-opens the overview in that period.
+
+## Budgets
+
+Optional daily/monthly spend limits, shown on the overview with ok/warn/over
+coloring. Create `~/.config/opencode-usage/budgets.json` (USD):
+
+```json
+{ "daily": 2, "monthly": 30, "warnAt": 0.8 }
 ```
-Session · Today · Week · Month · All
-```
 
-- Opened from inside a session → `Session` is the default (that session);
-  otherwise `Today`. `←` `→` (or the tabs' label) switches period.
-- `↑` `↓` navigate the actions (`By model · By provider · History`);
-  `Enter` opens the highlighted one; `Esc`/`Ctrl+C` closes.
-
-The same popup powers every scope, so the whole history (sessions, today, last
-7 days, last 30 days, all time) is reachable without a single model call.
-Typing `/usage ...` + Enter instead sends the text to the model — the `usage`
-tool is still registered by the server plugin, so a capable model can still
-produce a report on request (one small model call, best-effort; use the palette
-for the byte-exact popup).
+- Every field is optional; an absent or malformed file disables budgets
+  entirely (the feature never creates state of its own).
+- `warnAt` is the fraction of the budget where a line flips from ok to warn
+  (default `0.8`); invalid entries are ignored one by one.
 
 ## CLI
 
@@ -112,10 +133,16 @@ opencode-usage uninstall --purge    ...and delete the database (confirms)
 opencode-usage status               Installation + tracking status
 opencode-usage stats [period]       Print a report (session|today|week|month|all)
 opencode-usage stats --json         Machine-readable report
+opencode-usage export [--csv|--json] [period] [--out <file>]
+                                    Dump daily buckets + per-model rows
 opencode-usage import               Import history from opencode's own database
 opencode-usage update-pricing       Sync model pricing from models.dev
 opencode-usage reset [--yes]        Wipe usage history (interactive confirm)
 ```
+
+`export` reads from the same reporting layer as `stats` (daily buckets +
+per-model rows), defaults to `--json` on stdout, and writes to `--out <file>`
+when given — handy for spreadsheets, scripts and dashboards.
 
 `import` is optional but recommended once after `install` — it backfills history that
 predates tracking, straight from `~/.local/share/opencode/opencode.db` (read-only,
@@ -173,6 +200,10 @@ cacheReadCost = cacheReadTokens / 1M * cacheReadPricePerMillion
 cacheWriteCost= cacheWriteTokens/ 1M * cacheWritePricePerMillion
 ```
 
+- The **graph** uses the recomputed breakdown when current pricing exists and
+  otherwise falls back to the recorded at-use cost — a bucket is unknown only
+  when an event has neither. Run `opencode-usage update-pricing` once to
+  extend coverage to everything models.dev lists.
 - Reasoning tokens are charged at the output rate (matches opencode's behavior).
 - Models with no known pricing show **`Cost: Unknown`** — prices are never invented.
 - **Everything is labeled ESTIMATED.** Actual billing can differ (promotions,
@@ -206,6 +237,8 @@ extends coverage with everything models.dev lists.
 - Deduplication: primary keys on stable opencode IDs (part IDs, message IDs);
   re-emitted events (session replay) and re-runs of `import` are no-ops.
 - SQLite busy_timeout + bounded retries handle concurrent access.
+- The popup renders synchronously and never throws: empty databases, missing
+  pricing and unreadable state render as clean in-popup states.
 
 ## Privacy
 
@@ -221,7 +254,8 @@ opencode-usage uninstall
 
 Removes only the files this package installed (verified by ownership markers).
 Your usage history is kept. `opencode-usage uninstall --purge` also deletes the
-database (with confirmation).
+database (with confirmation). To also remove the npm package itself, run
+`npm uninstall -g @skinnysheep/opencode-usage`.
 
 ## Limitations
 
@@ -231,14 +265,15 @@ database (with confirmation).
 - The slash palette always shows exactly one entry: `/usage` (arbitrary filters like
   `/usage provider anthropic` are not in the popup — the typed `/usage ...` path can still work
   via the `usage` tool when the model cooperates, best-effort).
+- Budgets are advisory only — nothing is enforced or blocked at the limit.
 
 ## Development
 
 ```bash
 npm install
-npm run build      # tsc + esbuild (CLI + self-contained plugin bundles)
-npm test           # node --test (80 tests: normalization, pricing, storage, CLI, import, TUI formatting)
+npm run build      # tsc (CLI + TUI, strict) + esbuild (self-contained plugin bundles)
+npm test           # node --test (184 tests: normalization, pricing, storage, CLI, import/export, TUI)
 ```
 
-Built for opencode 1.18.18, verified end-to-end against a live binary.
+Built for opencode 1.18.x, verified end-to-end against a live binary.
 See `docs/opencode-integration-analysis.md` and `docs/architecture.md`.
